@@ -1,0 +1,15 @@
+# Xcode
+*.xcodeproj/
+build/
+DerivedData/
+*.xcuserdata
+*.xcscmblueprint
+*.xccheckout
+
+# sing-box binary (downloaded in CI)
+CroakVPN/Resources/sing-box
+
+# macOS
+.DS_Store
+*.swp
+*~

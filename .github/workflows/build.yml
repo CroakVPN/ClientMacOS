@@ -1,0 +1,115 @@
+name: Build CroakVPN macOS
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Ручной запуск из GitHub UI
+
+env:
+  SINGBOX_VERSION: "1.11.4"
+
+jobs:
+  build:
+    runs-on: macos-14  # Apple Silicon (M1) runner — бесплатно
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Setup Xcode ──────────────────────────────────
+      - name: Select Xcode 15
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      # ── 3. Install XcodeGen ──────────────────────────────
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # ── 4. Generate Xcode project ───────────────────────
+      - name: Generate .xcodeproj
+        run: xcodegen generate
+
+      # ── 5. Download sing-box ─────────────────────────────
+      - name: Download sing-box binary
+        run: |
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ]; then
+            PLATFORM="darwin-arm64"
+          else
+            PLATFORM="darwin-amd64"
+          fi
+          
+          echo "Downloading sing-box v${SINGBOX_VERSION} for ${PLATFORM}..."
+          curl -L -o singbox.tar.gz \
+            "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-${PLATFORM}.tar.gz"
+          
+          tar -xzf singbox.tar.gz
+          cp sing-box-${SINGBOX_VERSION}-${PLATFORM}/sing-box CroakVPN/Resources/sing-box
+          chmod +x CroakVPN/Resources/sing-box
+          
+          echo "sing-box version:"
+          CroakVPN/Resources/sing-box version
+
+      # ── 6. Re-generate project with sing-box resource ───
+      - name: Regenerate project (with sing-box resource)
+        run: xcodegen generate
+
+      # ── 7. Build ─────────────────────────────────────────
+      - name: Build CroakVPN
+        run: |
+          xcodebuild \
+            -project CroakVPN.xcodeproj \
+            -scheme CroakVPN \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            build
+
+      # ── 8. Verify .app exists ────────────────────────────
+      - name: Verify build output
+        run: |
+          APP_PATH="build/Build/Products/Release/CroakVPN.app"
+          if [ -d "$APP_PATH" ]; then
+            echo "✅ Build successful!"
+            echo "App size: $(du -sh "$APP_PATH" | cut -f1)"
+            echo "Contents:"
+            ls -la "$APP_PATH/Contents/MacOS/"
+            ls -la "$APP_PATH/Contents/Resources/" || true
+          else
+            echo "❌ Build failed — .app not found"
+            find build -name "*.app" -type d
+            exit 1
+          fi
+
+      # ── 9. Package ───────────────────────────────────────
+      - name: Package CroakVPN.app
+        run: |
+          cd build/Build/Products/Release
+          # Create zip with the .app
+          ditto -c -k --keepParent CroakVPN.app CroakVPN-macOS.zip
+          echo "Package size: $(du -sh CroakVPN-macOS.zip | cut -f1)"
+
+      # ── 10. Upload artifact ──────────────────────────────
+      - name: Upload CroakVPN.app
+        uses: actions/upload-artifact@v4
+        with:
+          name: CroakVPN-macOS
+          path: build/Build/Products/Release/CroakVPN-macOS.zip
+          retention-days: 30
+
+      # ── 11. Create Release (only on tag) ─────────────────
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/Build/Products/Release/CroakVPN-macOS.zip
+          generate_release_notes: true

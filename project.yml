@@ -1,0 +1,40 @@
+name: CroakVPN
+options:
+  bundleIdPrefix: com.croakvpn
+  deploymentTarget:
+    macOS: "13.0"
+  xcodeVersion: "15.0"
+  minimumXcodeGenVersion: "2.38"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGNING_ALLOWED: "NO"
+    PRODUCT_BUNDLE_IDENTIFIER: com.croakvpn.CroakVPN
+
+targets:
+  CroakVPN:
+    type: application
+    platform: macOS
+    sources:
+      - path: CroakVPN/Sources
+        type: group
+    resources:
+      - path: CroakVPN/Resources
+        type: group
+        optional: true
+    settings:
+      base:
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.utilities"
+        INFOPLIST_KEY_NSMainStoryboardFile: ""
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_NAME: CroakVPN
+        SWIFT_EMIT_LOC_STRINGS: YES
+        CODE_SIGN_ENTITLEMENTS: CroakVPN/CroakVPN.entitlements
+        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_ALLOWED: "NO"
+    entitlements:
+      path: CroakVPN/CroakVPN.entitlements
