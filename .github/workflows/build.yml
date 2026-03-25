@@ -3,8 +3,6 @@ name: Build CroakVPN macOS
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 env:
@@ -22,14 +20,8 @@ jobs:
       - name: Select Xcode 16
         run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
 
-      - name: Show Xcode version
-        run: xcodebuild -version
-
       - name: Install XcodeGen
         run: brew install xcodegen
-
-      - name: Generate .xcodeproj
-        run: xcodegen generate
 
       - name: Download sing-box binary
         run: |
@@ -39,20 +31,16 @@ jobs:
           else
             PLATFORM="darwin-amd64"
           fi
-          
-          echo "Downloading sing-box v${SINGBOX_VERSION} for ${PLATFORM}..."
           curl -L -o singbox.tar.gz \
             "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-${PLATFORM}.tar.gz"
-          
           tar -xzf singbox.tar.gz
           mkdir -p CroakVPN/Resources
           cp sing-box-${SINGBOX_VERSION}-${PLATFORM}/sing-box CroakVPN/Resources/sing-box
           chmod +x CroakVPN/Resources/sing-box
-          
-          echo "sing-box version:"
+          echo "✅ sing-box готов:"
           CroakVPN/Resources/sing-box version
 
-      - name: Regenerate project (with sing-box resource)
+      - name: Generate .xcodeproj
         run: xcodegen generate
 
       - name: Build CroakVPN
@@ -68,37 +56,28 @@ jobs:
             ONLY_ACTIVE_ARCH=NO \
             build
 
-      - name: Verify build output
+      - name: Verify sing-box in bundle
         run: |
-          APP_PATH="build/Build/Products/Release/CroakVPN.app"
-          if [ -d "$APP_PATH" ]; then
-            echo "✅ Build successful!"
-            echo "App size: $(du -sh "$APP_PATH" | cut -f1)"
-            echo "Contents:"
-            ls -la "$APP_PATH/Contents/MacOS/"
-            ls -la "$APP_PATH/Contents/Resources/" || true
-          else
-            echo "❌ Build failed — .app not found"
-            find build -name "*.app" -type d
-            exit 1
+          APP="build/Build/Products/Release/CroakVPN.app"
+          BINARY="$APP/Contents/Resources/sing-box"
+          if [ ! -f "$BINARY" ]; then
+            echo "❌ sing-box отсутствует в бандле, копируем вручную..."
+            mkdir -p "$APP/Contents/Resources"
+            cp CroakVPN/Resources/sing-box "$BINARY"
+            chmod +x "$BINARY"
           fi
+          echo "✅ sing-box в бандле:"
+          ls -lh "$BINARY"
+          "$BINARY" version
 
-      - name: Package CroakVPN.app
+      - name: Package
         run: |
           cd build/Build/Products/Release
           ditto -c -k --keepParent CroakVPN.app CroakVPN-macOS.zip
-          echo "Package size: $(du -sh CroakVPN-macOS.zip | cut -f1)"
 
-      - name: Upload CroakVPN.app
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: CroakVPN-macOS
           path: build/Build/Products/Release/CroakVPN-macOS.zip
           retention-days: 30
-
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: build/Build/Products/Release/CroakVPN-macOS.zip
-          generate_release_notes: true
