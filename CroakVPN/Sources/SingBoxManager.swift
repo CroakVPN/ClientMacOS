@@ -40,7 +40,10 @@ final class SingBoxManager: ObservableObject {
     // MARK: - Connect / Disconnect
 
     func connect() async {
-        guard connectionState == .disconnected || connectionState == .error("") != false else { return }
+        guard connectionState == .disconnected || {
+            if case .error = connectionState { return true }
+            return false
+        }() else { return }
 
         connectionState = .connecting
 
@@ -49,7 +52,7 @@ final class SingBoxManager: ObservableObject {
             return
         }
 
-        guard let configPath = PrefsManager.shared.getSingboxConfig() else {
+        guard PrefsManager.shared.getSingboxConfig() != nil else {
             connectionState = .error("Нет конфигурации. Добавьте подписку.")
             return
         }
@@ -147,7 +150,7 @@ final class SingBoxManager: ObservableObject {
     // MARK: - Traffic Stats via Clash API
 
     private func pollTrafficStats() async {
-        guard let url = URL(string: "\(clashAPIBase)/traffic") else { return }
+        guard URL(string: "\(clashAPIBase)/traffic") != nil else { return }
 
         // Clash API /traffic is a streaming endpoint. We do a quick GET to /connections instead.
         guard let connURL = URL(string: "\(clashAPIBase)/connections") else { return }
