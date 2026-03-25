@@ -53,13 +53,13 @@ jobs:
 
           curl -L -o singbox.tar.gz \
 
-            "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-${PLATFORM}.tar.gz"
+            "https://github.com/SagerNet/sing-box/releases/download/v1.11.4/sing-box-1.11.4-${PLATFORM}.tar.gz"
 
           tar -xzf singbox.tar.gz
 
           mkdir -p CroakVPN/Resources
 
-          cp sing-box-${SINGBOX_VERSION}-${PLATFORM}/sing-box CroakVPN/Resources/sing-box
+          cp sing-box-1.11.4-${PLATFORM}/sing-box CroakVPN/Resources/sing-box
 
           chmod +x CroakVPN/Resources/sing-box
 
