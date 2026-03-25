@@ -1,83 +1,141 @@
+
 name: Build CroakVPN macOS
 
 on:
+
   push:
+
     branches: [ main ]
+
   workflow_dispatch:
 
 env:
+
   SINGBOX_VERSION: "1.11.4"
 
 jobs:
+
   build:
+
     runs-on: macos-15
+
     timeout-minutes: 30
 
     steps:
+
       - name: Checkout code
+
         uses: actions/checkout@v4
 
       - name: Select Xcode 16
+
         run: sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
 
       - name: Install XcodeGen
+
         run: brew install xcodegen
 
       - name: Download sing-box binary
+
         run: |
+
           ARCH=$(uname -m)
+
           if [ "$ARCH" = "arm64" ]; then
+
             PLATFORM="darwin-arm64"
+
           else
+
             PLATFORM="darwin-amd64"
+
           fi
+
           curl -L -o singbox.tar.gz \
+
             "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-${PLATFORM}.tar.gz"
+
           tar -xzf singbox.tar.gz
+
           mkdir -p CroakVPN/Resources
+
           cp sing-box-${SINGBOX_VERSION}-${PLATFORM}/sing-box CroakVPN/Resources/sing-box
+
           chmod +x CroakVPN/Resources/sing-box
-          echo "✅ sing-box готов:"
+
+          echo "sing-box version:"
+
           CroakVPN/Resources/sing-box version
 
       - name: Generate .xcodeproj
+
         run: xcodegen generate
 
       - name: Build CroakVPN
+
         run: |
+
           xcodebuild \
+
             -project CroakVPN.xcodeproj \
+
             -scheme CroakVPN \
+
             -configuration Release \
+
             -derivedDataPath build \
+
             CODE_SIGN_IDENTITY="-" \
+
             CODE_SIGNING_REQUIRED=NO \
+
             CODE_SIGNING_ALLOWED=NO \
+
             ONLY_ACTIVE_ARCH=NO \
+
             build
 
       - name: Verify sing-box in bundle
+
         run: |
+
           APP="build/Build/Products/Release/CroakVPN.app"
+
           BINARY="$APP/Contents/Resources/sing-box"
+
           if [ ! -f "$BINARY" ]; then
-            echo "❌ sing-box отсутствует, копируем вручную..."
+
+            echo "sing-box not in bundle, copying manually..."
+
             mkdir -p "$APP/Contents/Resources"
+
             cp CroakVPN/Resources/sing-box "$BINARY"
+
             chmod +x "$BINARY"
+
           fi
-          echo "✅ sing-box в бандле:"
+
           ls -lh "$BINARY"
+
           "$BINARY" version
 
       - name: Package
+
         run: |
+
           cd build/Build/Products/Release
+
           ditto -c -k --keepParent CroakVPN.app CroakVPN-macOS.zip
 
       - name: Upload artifact
+
         uses: actions/upload-artifact@v4
+
         with:
+
           name: CroakVPN-macOS
+
           path: build/Build/Products/Release/CroakVPN-macOS.zip
+
           retention-days: 30
+
