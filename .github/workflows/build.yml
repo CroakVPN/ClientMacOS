@@ -61,7 +61,7 @@ jobs:
           APP="build/Build/Products/Release/CroakVPN.app"
           BINARY="$APP/Contents/Resources/sing-box"
           if [ ! -f "$BINARY" ]; then
-            echo "❌ sing-box отсутствует в бандле, копируем вручную..."
+            echo "❌ sing-box отсутствует, копируем вручную..."
             mkdir -p "$APP/Contents/Resources"
             cp CroakVPN/Resources/sing-box "$BINARY"
             chmod +x "$BINARY"
