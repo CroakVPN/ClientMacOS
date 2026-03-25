@@ -27,6 +27,7 @@ targets:
         optional: true
     settings:
       base:
+        INFOPLIST_KEY_CFBundleIconFile: AppIcon.icns
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.utilities"
         INFOPLIST_KEY_NSMainStoryboardFile: ""
         GENERATE_INFOPLIST_FILE: YES
