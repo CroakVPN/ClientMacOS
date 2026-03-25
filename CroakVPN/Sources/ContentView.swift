@@ -28,38 +28,53 @@ struct MainView: View {
     @ObservedObject var vm: AppViewModel
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HeaderView(onSettings: { vm.showSettings = true })
+        ZStack(alignment: .top) {
+            // Top tint overlay (like Windows version)
+            LinearGradient(
+                gradient: Gradient(colors: [
+                    tintColor.opacity(0.18),
+                    tintColor.opacity(0.06),
+                    Color.clear
+                ]),
+                startPoint: .top,
+                endPoint: .center
+            )
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
 
-            Spacer()
+            VStack(spacing: 0) {
+                // Header
+                HeaderView(onSettings: { vm.showSettings = true })
 
-            // Connect Button
-            ConnectButton(state: vm.connectionState) {
-                Task { await vm.toggleConnection() }
+                Spacer()
+
+                // Connect Button
+                ConnectButton(state: vm.connectionState) {
+                    Task { await vm.toggleConnection() }
+                }
+
+                // Status Text
+                Text(vm.connectionState.displayText)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(statusColor)
+                    .padding(.top, 16)
+
+                Spacer()
+
+                // Traffic Stats
+                TrafficStatsView(stats: vm.trafficStats)
+                    .padding(.bottom, 8)
+
+                // Timer
+                Text("Время: \(vm.formattedElapsed)")
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundColor(.gray)
+                    .padding(.bottom, 16)
+
+                // Footer
+                FooterView()
+                    .padding(.bottom, 12)
             }
-
-            // Status Text
-            Text(vm.connectionState.displayText)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(statusColor)
-                .padding(.top, 16)
-
-            Spacer()
-
-            // Traffic Stats
-            TrafficStatsView(stats: vm.trafficStats)
-                .padding(.bottom, 8)
-
-            // Timer
-            Text("Время: \(vm.formattedElapsed)")
-                .font(.system(size: 13, design: .monospaced))
-                .foregroundColor(.gray)
-                .padding(.bottom, 16)
-
-            // Footer
-            FooterView()
-                .padding(.bottom, 12)
         }
     }
 
@@ -69,6 +84,15 @@ struct MainView: View {
         case .connecting, .disconnecting: return .yellow
         case .error:        return .red
         default:            return .gray
+        }
+    }
+
+    private var tintColor: Color {
+        switch vm.connectionState {
+        case .connected:    return Color(red: 0.30, green: 0.78, blue: 0.35)
+        case .connecting:   return Color(red: 0.85, green: 0.65, blue: 0.15)
+        case .error:        return Color(red: 0.85, green: 0.25, blue: 0.25)
+        default:            return Color(red: 0.35, green: 0.38, blue: 0.42)
         }
     }
 }
