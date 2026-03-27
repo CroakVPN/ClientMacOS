@@ -22,8 +22,9 @@ targets:
       - path: CroakVPN/Sources
         type: group
     resources:
-      - path: CroakVPN/Resources
-        type: group
+      - path: CroakVPN/Resources/sing-box
+        optional: true
+      - path: CroakVPN/Resources/AppIcon.icns
         optional: true
     settings:
       base:
@@ -37,6 +38,5 @@ targets:
         ENABLE_HARDENED_RUNTIME: NO
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_ALLOWED: "NO"
-        ASSETCATALOG_COMPILER_APPICON_NAME: ""
     entitlements:
       path: CroakVPN/CroakVPN.entitlements

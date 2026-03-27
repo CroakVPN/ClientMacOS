@@ -84,8 +84,10 @@ final class SingBoxManager: ObservableObject {
         let pidString = String(data: pidData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         singboxPID = Int32(pidString)
 
-        // Check via Clash API with retries (up to 8 seconds)
-        let isRunning = await checkClashAPI()
+        // Wait for sing-box to initialize, then check if process is alive
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+
+        let isRunning = checkPIDAlive(pidString)
 
         if isRunning {
             connectionState = .connected
@@ -101,16 +103,10 @@ final class SingBoxManager: ObservableObject {
         }
     }
 
-    private func checkClashAPI() async -> Bool {
-        guard let url = URL(string: "\(clashAPIBase)/version") else { return false }
-        for _ in 0..<8 {
-            do {
-                let (_, response) = try await URLSession.shared.data(from: url)
-                if (response as? HTTPURLResponse)?.statusCode == 200 { return true }
-            } catch {}
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-        }
-        return false
+    // Check if process is alive using `kill -0` via shell (avoids sandbox URLSession issue)
+    private func checkPIDAlive(_ pidString: String) -> Bool {
+        guard !pidString.isEmpty, let pid = Int32(pidString) else { return false }
+        return kill(pid, 0) == 0
     }
 
     private func monitorPID(_ pid: Int32) {
@@ -182,25 +178,38 @@ final class SingBoxManager: ObservableObject {
         elapsedTimer?.invalidate(); elapsedTimer = nil
     }
 
-    // MARK: - Traffic Stats
+    // MARK: - Traffic Stats (via curl to avoid sandbox URLSession restrictions)
 
     private func pollTrafficStats() async {
-        guard let connURL = URL(string: "\(clashAPIBase)/connections") else { return }
-        do {
-            let (data, _) = try await URLSession.shared.data(from: connURL)
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                let dlTotal = json["downloadTotal"] as? Int64 ?? 0
-                let ulTotal = json["uploadTotal"] as? Int64 ?? 0
-                let dlSpeed = dlTotal - trafficStats.totalDownload
-                let ulSpeed = ulTotal - trafficStats.totalUpload
-                trafficStats = TrafficStats(
-                    downloadSpeed: formatSpeed(dlSpeed > 0 ? dlSpeed : 0),
-                    uploadSpeed: formatSpeed(ulSpeed > 0 ? ulSpeed : 0),
-                    totalDownload: dlTotal,
-                    totalUpload: ulTotal
-                )
-            }
-        } catch {}
+        let result = await runShell("curl -s http://127.0.0.1:9090/connections")
+        guard let data = result.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+
+        let dlTotal = json["downloadTotal"] as? Int64 ?? 0
+        let ulTotal = json["uploadTotal"] as? Int64 ?? 0
+        let dlSpeed = dlTotal - trafficStats.totalDownload
+        let ulSpeed = ulTotal - trafficStats.totalUpload
+        trafficStats = TrafficStats(
+            downloadSpeed: formatSpeed(dlSpeed > 0 ? dlSpeed : 0),
+            uploadSpeed: formatSpeed(ulSpeed > 0 ? ulSpeed : 0),
+            totalDownload: dlTotal,
+            totalUpload: ulTotal
+        )
+    }
+
+    private func runShell(_ command: String) async -> String {
+        await withCheckedContinuation { continuation in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+            proc.arguments = ["-c", command]
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = FileHandle.nullDevice
+            try? proc.run()
+            proc.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            continuation.resume(returning: String(data: data, encoding: .utf8) ?? "")
+        }
     }
 
     private func formatSpeed(_ bytesPerSecond: Int64) -> String {
