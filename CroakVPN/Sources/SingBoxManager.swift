@@ -11,7 +11,7 @@ final class SingBoxManager: ObservableObject {
     @Published var trafficStats = TrafficStats()
     @Published var elapsedTime: TimeInterval = 0
 
-    private var process: Process?
+    private var singboxPID: Int32?
     private var statsTimer: Timer?
     private var elapsedTimer: Timer?
     private var connectTime: Date?
@@ -43,13 +43,6 @@ final class SingBoxManager: ObservableObject {
 
         connectionState = .connecting
 
-        // Kill any leftover sing-box processes
-        let cleanup = Process()
-            cleanup.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            cleanup.arguments = ["-e", "do shell script \"pkill -f sing-box; sleep 0.5\" with administrator privileges"]
-        try? cleanup.run()
-            cleanup.waitUntilExit()
-
         guard let singboxPath = findSingBox() else {
             connectionState = .error("sing-box не найден")
             return
@@ -62,57 +55,53 @@ final class SingBoxManager: ObservableObject {
 
         let configFile = PrefsManager.shared.singboxConfigPath.path
 
+        // Single osascript call: kill old + start new — ONE password prompt
+        let script = "do shell script \"pkill -f sing-box; sleep 0.3; \(singboxPath) run -c '\(configFile)' > /tmp/singbox.log 2>&1 & echo $!\" with administrator privileges"
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", script]
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+
         do {
-            // Use osascript to run sing-box with admin privileges (needed for TUN)
-            // We wrap it in a background shell so it keeps running
-            let script = "do shell script \"\(singboxPath) run -c '\(configFile)' > /tmp/singbox.log 2>&1 & echo $!\" with administrator privileges"
-
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            proc.arguments = ["-e", script]
-
-            let outPipe = Pipe()
-            let errPipe = Pipe()
-            proc.standardOutput = outPipe
-            proc.standardError = errPipe
-
             try proc.run()
             proc.waitUntilExit()
-
-            // Get the PID of the background sing-box process
-            let pidData = outPipe.fileHandleForReading.readDataToEndOfFile()
-            let pidString = String(data: pidData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-            if proc.terminationStatus != 0 {
-                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Ошибка запуска"
-                connectionState = .error(errMsg)
-                return
-            }
-
-            // Wait for sing-box to initialize
-            try await Task.sleep(nanoseconds: 2_000_000_000) // 2s
-
-            // Check if sing-box is running by querying clash API
-            let isRunning = await checkClashAPI()
-
-            if isRunning {
-                connectionState = .connected
-                connectTime = Date()
-                startTimers()
-
-                // Monitor the process via PID
-                if let pid = Int32(pidString) {
-                    monitorPID(pid)
-                }
-            } else {
-                // Read log for error details
-                let log = (try? String(contentsOfFile: "/tmp/singbox.log", encoding: .utf8)) ?? ""
-                let lastLine = log.components(separatedBy: "\n").filter { !$0.isEmpty }.last ?? "sing-box не запустился"
-                connectionState = .error(lastLine)
-            }
         } catch {
             connectionState = .error(error.localizedDescription)
+            return
+        }
+
+        // If user cancelled password dialog
+        if proc.terminationStatus != 0 {
+            connectionState = .disconnected
+            return
+        }
+
+        let pidData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let pidString = String(data: pidData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        singboxPID = Int32(pidString)
+
+        // Wait for sing-box to initialize
+        do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch {}
+
+        // Check via Clash API
+        let isRunning = await checkClashAPI()
+
+        if isRunning {
+            connectionState = .connected
+            connectTime = Date()
+            startTimers()
+            if let pid = singboxPID { monitorPID(pid) }
+        } else {
+            let log = (try? String(contentsOfFile: "/tmp/singbox.log", encoding: .utf8)) ?? ""
+            let lines = log.components(separatedBy: "\n").filter { !$0.isEmpty }
+            let fatalLine = lines.first(where: { $0.contains("FATAL") || $0.contains("fatal") })
+            let errMsg = fatalLine ?? lines.last ?? "sing-box не запустился"
+            connectionState = .error(stripAnsi(errMsg))
         }
     }
 
@@ -128,7 +117,6 @@ final class SingBoxManager: ObservableObject {
 
     private func monitorPID(_ pid: Int32) {
         Task.detached { [weak self] in
-            // Poll every 2 seconds to check if process is still alive
             while true {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 let alive = kill(pid, 0) == 0
@@ -137,8 +125,10 @@ final class SingBoxManager: ObservableObject {
                         guard let self = self else { return }
                         if self.connectionState == .connected {
                             let log = (try? String(contentsOfFile: "/tmp/singbox.log", encoding: .utf8)) ?? ""
-                            let lastLine = log.components(separatedBy: "\n").filter { !$0.isEmpty }.last ?? "sing-box завершился неожиданно"
-                            self.connectionState = .error(lastLine)
+                            let lines = log.components(separatedBy: "\n").filter { !$0.isEmpty }
+                            let fatalLine = lines.first(where: { $0.contains("FATAL") || $0.contains("fatal") })
+                            let msg = self.stripAnsi(fatalLine ?? "sing-box завершился неожиданно")
+                            self.connectionState = .error(msg)
                             self.stopTimers()
                         }
                     }
@@ -148,19 +138,27 @@ final class SingBoxManager: ObservableObject {
         }
     }
 
+    private func stripAnsi(_ str: String) -> String {
+        str.replacingOccurrences(of: "\\[\\d+m", with: "", options: .regularExpression)
+           .replacingOccurrences(of: "[33m", with: "")
+           .replacingOccurrences(of: "[31m", with: "")
+           .replacingOccurrences(of: "[0m", with: "")
+           .replacingOccurrences(of: "[0000]", with: "")
+           .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     func disconnect() {
         guard connectionState == .connected || connectionState == .connecting else { return }
         connectionState = .disconnecting
         stopTimers()
 
-        // Kill sing-box by name (it runs as root via sudo)
         let killProc = Process()
         killProc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         killProc.arguments = ["-e", "do shell script \"pkill -f sing-box\" with administrator privileges"]
         try? killProc.run()
         killProc.waitUntilExit()
 
-        process = nil
+        singboxPID = nil
         connectionState = .disconnected
         trafficStats = TrafficStats()
         elapsedTime = 0
@@ -171,9 +169,7 @@ final class SingBoxManager: ObservableObject {
 
     private func startTimers() {
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                await self?.pollTrafficStats()
-            }
+            Task { @MainActor [weak self] in await self?.pollTrafficStats() }
         }
         elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -184,10 +180,8 @@ final class SingBoxManager: ObservableObject {
     }
 
     private func stopTimers() {
-        statsTimer?.invalidate()
-        statsTimer = nil
-        elapsedTimer?.invalidate()
-        elapsedTimer = nil
+        statsTimer?.invalidate(); statsTimer = nil
+        elapsedTimer?.invalidate(); elapsedTimer = nil
     }
 
     // MARK: - Traffic Stats
