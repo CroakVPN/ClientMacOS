@@ -47,6 +47,7 @@ final class SingBoxManager: ObservableObject {
         }
     }
 
+    @discardableResult
     private func runAppleScript(_ script: String) async -> Int32 {
         let path = NSTemporaryDirectory() + "croak.applescript"
         try? script.write(toFile: path, atomically: true, encoding: .utf8)
@@ -168,14 +169,6 @@ final class SingBoxManager: ObservableObject {
     }
 
     // MARK: - Helpers
-
-    @discardableResult
-    private func runAppleScript(_ script: String) async -> Int32 {
-        let path = NSTemporaryDirectory() + "croak.applescript"
-        try? script.write(toFile: path, atomically: true, encoding: .utf8)
-        let (_, status) = await shell("/usr/bin/osascript '\(path)'")
-        return status
-    }
 
     private func stripAnsi(_ str: String) -> String {
         str.replacingOccurrences(of: "\\[\\d+m", with: "", options: .regularExpression)
