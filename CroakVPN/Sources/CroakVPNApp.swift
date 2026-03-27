@@ -1,14 +1,17 @@
 import SwiftUI
+import ServiceManagement
 
 @main
 struct CroakVPNApp: App {
     @StateObject private var vm = AppViewModel()
+    @StateObject private var launchManager = LaunchAtLoginManager()
 
     var body: some Scene {
         // Main window
         WindowGroup {
             ContentView()
                 .environmentObject(vm)
+                .environmentObject(launchManager)
                 .preferredColorScheme(.dark)
         }
         .windowStyle(.hiddenTitleBar)
@@ -17,7 +20,7 @@ struct CroakVPNApp: App {
 
         // Menubar icon
         MenuBarExtra {
-            MenuBarView(vm: vm)
+            MenuBarView(vm: vm, launchManager: launchManager)
         } label: {
             Image(systemName: menuBarIcon)
         }
@@ -29,6 +32,32 @@ struct CroakVPNApp: App {
         case .connecting:   return "shield.slash"
         case .error:        return "exclamationmark.shield"
         default:            return "shield"
+        }
+    }
+}
+
+// MARK: - Launch at Login Manager
+
+@MainActor
+final class LaunchAtLoginManager: ObservableObject {
+    @Published var isEnabled: Bool = false
+
+    init() {
+        isEnabled = (SMAppService.mainApp.status == .enabled)
+    }
+
+    func toggle() {
+        do {
+            if isEnabled {
+                try SMAppService.mainApp.unregister()
+                isEnabled = false
+            } else {
+                try SMAppService.mainApp.register()
+                isEnabled = true
+            }
+        } catch {
+            // Если не удалось — сбрасываем состояние по факту
+            isEnabled = (SMAppService.mainApp.status == .enabled)
         }
     }
 }

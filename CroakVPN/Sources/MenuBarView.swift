@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MenuBarView: View {
     @ObservedObject var vm: AppViewModel
+    @ObservedObject var launchManager: LaunchAtLoginManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -10,7 +11,6 @@ struct MenuBarView: View {
                 Circle()
                     .fill(statusDotColor)
                     .frame(width: 8, height: 8)
-
                 Text(vm.connectionState.displayText)
                     .font(.system(size: 13))
             }
@@ -30,11 +30,24 @@ struct MenuBarView: View {
 
             Divider()
 
+            // Launch at login toggle
+            Button(action: { launchManager.toggle() }) {
+                Label(
+                    launchManager.isEnabled ? "Автозапуск: вкл" : "Автозапуск: выкл",
+                    systemImage: launchManager.isEnabled ? "checkmark.circle.fill" : "circle"
+                )
+            }
+
+            Divider()
+
             // Open main window
             Button("Открыть CroakVPN") {
                 NSApp.activate(ignoringOtherApps: true)
-                if let window = NSApp.windows.first(where: { $0.title.contains("CroakVPN") || $0.isKeyWindow }) {
-                    window.makeKeyAndOrderFront(nil)
+                for window in NSApp.windows {
+                    if !window.title.contains("Item-0") {
+                        window.makeKeyAndOrderFront(nil)
+                        break
+                    }
                 }
             }
 

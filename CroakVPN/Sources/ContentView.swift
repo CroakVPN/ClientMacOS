@@ -18,6 +18,7 @@ struct ContentView: View {
         .frame(width: 360, height: 560)
         .sheet(isPresented: $vm.showSettings) {
             SettingsView(vm: vm)
+                .environmentObject(LaunchAtLoginManager())
         }
         .onAppear {
             Task { await updater.checkForUpdates() }
@@ -32,7 +33,7 @@ final class UpdateChecker: ObservableObject {
     @Published var updateAvailable: Bool = false
     @Published var latestVersion: String = ""
 
-    private let currentVersion = "1.0"
+    private let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
     private let releasesURL = "https://api.github.com/repos/CroakVPN/ClientMacOS/releases/latest"
 
     func checkForUpdates() async {
@@ -86,7 +87,7 @@ struct MainView: View {
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundColor(.white)
                             Spacer()
-                            Text("Скачать")
+                            Text("Скачать →")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(.white.opacity(0.8))
                         }
@@ -109,6 +110,15 @@ struct MainView: View {
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(statusColor)
                     .padding(.top, 16)
+
+                if case .error(let msg) = vm.connectionState {
+                    Text(msg)
+                        .font(.system(size: 11))
+                        .foregroundColor(.red.opacity(0.8))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 4)
+                }
 
                 Spacer()
 
@@ -266,12 +276,23 @@ struct TrafficStatsView: View {
     }
 }
 
-// MARK: - Footer
+// MARK: - Footer (кликабельный @croakvpnbot)
 
 struct FooterView: View {
     var body: some View {
-        Text("@croakvpnbot")
-            .font(.system(size: 11))
-            .foregroundColor(Color.gray.opacity(0.5))
+        Button(action: {
+            if let url = URL(string: "https://t.me/croakvpnbot") {
+                NSWorkspace.shared.open(url)
+            }
+        }) {
+            Text("@croakvpnbot")
+                .font(.system(size: 11))
+                .foregroundColor(Color.gray.opacity(0.5))
+                .underline(false)
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
     }
 }

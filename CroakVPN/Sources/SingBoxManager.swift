@@ -15,6 +15,7 @@ final class SingBoxManager: ObservableObject {
     private var connectTime: Date?
 
     private let clashAPIBase = "127.0.0.1:9090"
+    private let sudoersPath = "/etc/sudoers.d/croakvpn"
 
     // MARK: - Find sing-box binary
 
@@ -55,7 +56,26 @@ final class SingBoxManager: ObservableObject {
         return status
     }
 
-    // MARK: - API check via curl (bypasses sandbox)
+    // MARK: - Sudoers (one-time password setup)
+
+    /// true если sudoers уже установлен — дальнейшие запуски без пароля
+    var isSudoersInstalled: Bool {
+        FileManager.default.fileExists(atPath: sudoersPath)
+    }
+
+    /// Записывает правило sudoers один раз (требует пароль через AppleScript).
+    /// После этого pkill и sing-box работают через sudo без пароля.
+    func installSudoers(singboxPath: String) async -> Bool {
+        let user = NSUserName()
+        let rule = "\(user) ALL=(ALL) NOPASSWD: \(singboxPath), /usr/bin/pkill\n"
+        let escaped = rule.replacingOccurrences(of: "\\", with: "\\\\")
+                          .replacingOccurrences(of: "'", with: "'\\''")
+        let script = "do shell script \"printf '%s' '\(escaped)' | tee \(sudoersPath) && chmod 440 \(sudoersPath)\" with administrator privileges"
+        let status = await runAppleScript(script)
+        return status == 0
+    }
+
+    // MARK: - API check via curl
 
     private func checkAPI() async -> Bool {
         for _ in 0..<12 {
@@ -89,9 +109,19 @@ final class SingBoxManager: ObservableObject {
         let configFile = PrefsManager.shared.singboxConfigPath.path
         let logFile = NSHomeDirectory() + "/singbox_croak.log"
 
-        // Kill existing + start new — single password prompt
-        let script = "do shell script \"pkill -x sing-box; sleep 0.3; '\(singboxPath)' run -c '\(configFile)' > '\(logFile)' 2>&1 &\" with administrator privileges"
-        let status = await runAppleScript(script)
+        // Если sudoers ещё не установлен — установим сейчас (один раз с паролем)
+        if !isSudoersInstalled {
+            let ok = await installSudoers(singboxPath: singboxPath)
+            if !ok {
+                connectionState = .disconnected
+                return
+            }
+        }
+
+        // Запуск без пароля через sudo
+        let (_, status) = await shell(
+            "sudo /usr/bin/pkill -x sing-box 2>/dev/null; sleep 0.3; sudo '\(singboxPath)' run -c '\(configFile)' > '\(logFile)' 2>&1 &"
+        )
 
         if status != 0 {
             connectionState = .disconnected
@@ -120,8 +150,7 @@ final class SingBoxManager: ObservableObject {
         stopTimers()
 
         Task {
-            let script = "do shell script \"pkill -x sing-box\" with administrator privileges"
-            await runAppleScript(script)
+            await shell("sudo /usr/bin/pkill -x sing-box 2>/dev/null")
             await MainActor.run {
                 self.connectionState = .disconnected
                 self.trafficStats = TrafficStats()
