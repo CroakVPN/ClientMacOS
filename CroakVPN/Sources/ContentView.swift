@@ -2,15 +2,15 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var vm = AppViewModel()
+    @StateObject private var updater = UpdateChecker()
 
     var body: some View {
         ZStack {
-            // Background
             Color(red: 0.09, green: 0.10, blue: 0.13)
                 .ignoresSafeArea()
 
             if vm.hasSubscription {
-                MainView(vm: vm)
+                MainView(vm: vm, updater: updater)
             } else {
                 SubscriptionSetupView(vm: vm)
             }
@@ -19,6 +19,41 @@ struct ContentView: View {
         .sheet(isPresented: $vm.showSettings) {
             SettingsView(vm: vm)
         }
+        .onAppear {
+            Task { await updater.checkForUpdates() }
+        }
+    }
+}
+
+// MARK: - Update Checker
+
+@MainActor
+final class UpdateChecker: ObservableObject {
+    @Published var updateAvailable: Bool = false
+    @Published var latestVersion: String = ""
+
+    private let currentVersion = "1.0"
+    private let releasesURL = "https://api.github.com/repos/CroakVPN/ClientMacOS/releases/latest"
+
+    func checkForUpdates() async {
+        guard let url = URL(string: releasesURL) else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let tag = json["tag_name"] as? String {
+                let version = tag.trimmingCharacters(in: CharacterSet(charactersIn: "v"))
+                if version != currentVersion {
+                    latestVersion = version
+                    updateAvailable = true
+                }
+            }
+        } catch {}
+    }
+
+    func openReleasePage() {
+        if let url = URL(string: "https://github.com/CroakVPN/ClientMacOS/releases/latest") {
+            NSWorkspace.shared.open(url)
+        }
     }
 }
 
@@ -26,10 +61,10 @@ struct ContentView: View {
 
 struct MainView: View {
     @ObservedObject var vm: AppViewModel
+    @ObservedObject var updater: UpdateChecker
 
     var body: some View {
         ZStack(alignment: .top) {
-            // Top tint overlay (like Windows version)
             LinearGradient(
                 gradient: Gradient(colors: [
                     tintColor.opacity(0.18),
@@ -43,17 +78,33 @@ struct MainView: View {
             .allowsHitTesting(false)
 
             VStack(spacing: 0) {
-                // Header
+                // Update banner
+                if updater.updateAvailable {
+                    Button(action: { updater.openReleasePage() }) {
+                        HStack {
+                            Text("Доступна версия \(updater.latestVersion)")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.white)
+                            Spacer()
+                            Text("Скачать")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.8))
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                        .background(Color(red: 0.20, green: 0.40, blue: 0.75))
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 HeaderView(onSettings: { vm.showSettings = true })
 
                 Spacer()
 
-                // Connect Button
                 ConnectButton(state: vm.connectionState) {
                     Task { await vm.toggleConnection() }
                 }
 
-                // Status Text
                 Text(vm.connectionState.displayText)
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(statusColor)
@@ -61,17 +112,14 @@ struct MainView: View {
 
                 Spacer()
 
-                // Traffic Stats
                 TrafficStatsView(stats: vm.trafficStats)
                     .padding(.bottom, 8)
 
-                // Timer
                 Text("Время: \(vm.formattedElapsed)")
                     .font(.system(size: 13, design: .monospaced))
                     .foregroundColor(.gray)
                     .padding(.bottom, 16)
 
-                // Footer
                 FooterView()
                     .padding(.bottom, 12)
             }
@@ -107,9 +155,7 @@ struct HeaderView: View {
             Text("CroakVPN")
                 .font(.system(size: 22, weight: .bold))
                 .foregroundColor(.white)
-
             Spacer()
-
             Button(action: onSettings) {
                 Image(systemName: "gearshape")
                     .font(.system(size: 18))
@@ -122,7 +168,7 @@ struct HeaderView: View {
     }
 }
 
-// MARK: - Connect Button (big circle like Windows version)
+// MARK: - Connect Button
 
 struct ConnectButton: View {
     let state: ConnectionState
@@ -131,18 +177,13 @@ struct ConnectButton: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                // Outer ring
                 Circle()
                     .stroke(ringColor.opacity(0.3), lineWidth: 4)
                     .frame(width: 130, height: 130)
-
-                // Filled circle
                 Circle()
                     .fill(fillColor)
                     .frame(width: 110, height: 110)
                     .shadow(color: fillColor.opacity(0.4), radius: 12, x: 0, y: 4)
-
-                // Icon
                 iconView
             }
         }
@@ -210,7 +251,6 @@ struct TrafficStatsView: View {
                     .font(.system(size: 11))
                     .foregroundColor(.gray)
             }
-
             VStack(spacing: 4) {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 14))

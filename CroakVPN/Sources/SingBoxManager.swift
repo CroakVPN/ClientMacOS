@@ -16,6 +16,8 @@ final class SingBoxManager: ObservableObject {
 
     private let clashAPIBase = "127.0.0.1:9090"
 
+    // MARK: - Find sing-box binary
+
     private func findSingBox() -> String? {
         if let bundled = Bundle.main.resourceURL?.appendingPathComponent("sing-box").path,
            FileManager.default.isExecutableFile(atPath: bundled) {
@@ -24,6 +26,8 @@ final class SingBoxManager: ObservableObject {
         let paths = ["/usr/local/bin/sing-box", "/opt/homebrew/bin/sing-box", "/usr/bin/sing-box"]
         return paths.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
+
+    // MARK: - Shell helpers
 
     private func shell(_ cmd: String) async -> (String, Int32) {
         await withCheckedContinuation { cont in
@@ -43,6 +47,15 @@ final class SingBoxManager: ObservableObject {
         }
     }
 
+    private func runAppleScript(_ script: String) async -> Int32 {
+        let path = NSTemporaryDirectory() + "croak.applescript"
+        try? script.write(toFile: path, atomically: true, encoding: .utf8)
+        let (_, status) = await shell("/usr/bin/osascript '\(path)'")
+        return status
+    }
+
+    // MARK: - API check via curl (bypasses sandbox)
+
     private func checkAPI() async -> Bool {
         for _ in 0..<12 {
             let (out, _) = await shell("curl -s --connect-timeout 1 --max-time 1 http://\(clashAPIBase)/version")
@@ -51,6 +64,8 @@ final class SingBoxManager: ObservableObject {
         }
         return false
     }
+
+    // MARK: - Connect
 
     func connect() async {
         guard connectionState == .disconnected || {
@@ -72,12 +87,10 @@ final class SingBoxManager: ObservableObject {
 
         let configFile = PrefsManager.shared.singboxConfigPath.path
         let logFile = NSHomeDirectory() + "/singbox_croak.log"
-        let scriptPath = NSTemporaryDirectory() + "croak_launch.applescript"
 
-        let appleScript = "do shell script \"pkill -f sing-box; sleep 0.3; '\(singboxPath)' run -c '\(configFile)' > '\(logFile)' 2>&1 &\" with administrator privileges"
-        try? appleScript.write(toFile: scriptPath, atomically: true, encoding: .utf8)
-
-        let (_, status) = await shell("/usr/bin/osascript '\(scriptPath)'")
+        // Kill existing + start new — single password prompt
+        let script = "do shell script \"pkill -x sing-box; sleep 0.3; '\(singboxPath)' run -c '\(configFile)' > '\(logFile)' 2>&1 &\" with administrator privileges"
+        let status = await runAppleScript(script)
 
         if status != 0 {
             connectionState = .disconnected
@@ -98,17 +111,16 @@ final class SingBoxManager: ObservableObject {
         }
     }
 
+    // MARK: - Disconnect
+
     func disconnect() {
         guard connectionState == .connected || connectionState == .connecting else { return }
         connectionState = .disconnecting
         stopTimers()
 
-        let scriptPath = NSTemporaryDirectory() + "croak_kill.applescript"
-        let appleScript = "do shell script \"pkill -f sing-box\" with administrator privileges"
-        try? appleScript.write(toFile: scriptPath, atomically: true, encoding: .utf8)
-
         Task {
-            await shell("/usr/bin/osascript '\(scriptPath)'")
+            let script = "do shell script \"pkill -x sing-box\" with administrator privileges"
+            await runAppleScript(script)
             await MainActor.run {
                 self.connectionState = .disconnected
                 self.trafficStats = TrafficStats()
@@ -117,6 +129,8 @@ final class SingBoxManager: ObservableObject {
             }
         }
     }
+
+    // MARK: - Timers
 
     private func startTimers() {
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -135,6 +149,8 @@ final class SingBoxManager: ObservableObject {
         elapsedTimer?.invalidate(); elapsedTimer = nil
     }
 
+    // MARK: - Traffic stats via curl
+
     private func pollTrafficStats() async {
         let (result, _) = await shell("curl -s --max-time 1 http://\(clashAPIBase)/connections")
         guard let data = result.data(using: .utf8),
@@ -149,6 +165,16 @@ final class SingBoxManager: ObservableObject {
             totalDownload: dlTotal,
             totalUpload: ulTotal
         )
+    }
+
+    // MARK: - Helpers
+
+    @discardableResult
+    private func runAppleScript(_ script: String) async -> Int32 {
+        let path = NSTemporaryDirectory() + "croak.applescript"
+        try? script.write(toFile: path, atomically: true, encoding: .utf8)
+        let (_, status) = await shell("/usr/bin/osascript '\(path)'")
+        return status
     }
 
     private func stripAnsi(_ str: String) -> String {
