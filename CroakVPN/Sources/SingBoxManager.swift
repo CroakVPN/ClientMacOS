@@ -1,7 +1,6 @@
 import Foundation
 import Combine
 
-/// Manages the sing-box process: start, stop, traffic stats polling.
 @MainActor
 final class SingBoxManager: ObservableObject {
 
@@ -11,29 +10,51 @@ final class SingBoxManager: ObservableObject {
     @Published var trafficStats = TrafficStats()
     @Published var elapsedTime: TimeInterval = 0
 
-    private var singboxPID: Int32?
     private var statsTimer: Timer?
     private var elapsedTimer: Timer?
     private var connectTime: Date?
 
-    private let clashAPIBase = "http://127.0.0.1:9090"
-
-    // MARK: - Locate sing-box binary
+    private let clashAPIBase = "127.0.0.1:9090"
 
     private func findSingBox() -> String? {
         if let bundled = Bundle.main.resourceURL?.appendingPathComponent("sing-box").path,
            FileManager.default.isExecutableFile(atPath: bundled) {
             return bundled
         }
-        let paths = [
-            "/usr/local/bin/sing-box",
-            "/opt/homebrew/bin/sing-box",
-            "/usr/bin/sing-box"
-        ]
+        let paths = ["/usr/local/bin/sing-box", "/opt/homebrew/bin/sing-box", "/usr/bin/sing-box"]
         return paths.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    // MARK: - Connect / Disconnect
+    @discardableResult
+    private func runShell(_ command: String) -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", command]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+        proc.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private func runShellAsync(_ command: String) async -> String {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: self.runShell(command))
+            }
+        }
+    }
+
+    private func checkAPI() async -> Bool {
+        for _ in 0..<10 {
+            let result = await runShellAsync("curl -s --max-time 1 http://\(clashAPIBase)/version")
+            if result.contains("sing-box") { return true }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        return false
+    }
 
     func connect() async {
         guard connectionState == .disconnected || {
@@ -54,18 +75,14 @@ final class SingBoxManager: ObservableObject {
         }
 
         let configFile = PrefsManager.shared.singboxConfigPath.path
+        let logFile = NSHomeDirectory() + "/singbox_croak.log"
 
-        // Single osascript call: kill old + start new — ONE password prompt
-        let script = "do shell script \"pkill -f sing-box; sleep 0.3; \(singboxPath) run -c '\(configFile)' > /tmp/singbox.log 2>&1 & echo $!\" with administrator privileges"
+        let script = "do shell script \"pkill -f sing-box; sleep 0.3; '\(singboxPath)' run -c '\(configFile)' > '\(logFile)' 2>&1 &\" with administrator privileges"
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         proc.arguments = ["-e", script]
-
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = errPipe
+        proc.standardError = FileHandle.nullDevice
 
         do {
             try proc.run()
@@ -80,65 +97,18 @@ final class SingBoxManager: ObservableObject {
             return
         }
 
-        let pidData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let pidString = String(data: pidData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        singboxPID = Int32(pidString)
-
-        // Wait for sing-box to initialize, then check if process is alive
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-
-        let isRunning = checkPIDAlive(pidString)
+        let isRunning = await checkAPI()
 
         if isRunning {
             connectionState = .connected
             connectTime = Date()
             startTimers()
-            if let pid = singboxPID { monitorPID(pid) }
         } else {
-            let log = (try? String(contentsOfFile: "/tmp/singbox.log", encoding: .utf8)) ?? ""
+            let log = (try? String(contentsOfFile: logFile, encoding: .utf8)) ?? ""
             let lines = log.components(separatedBy: "\n").filter { !$0.isEmpty }
-            let fatalLine = lines.first(where: { $0.contains("FATAL") || $0.contains("fatal") })
-            let errMsg = fatalLine ?? lines.last ?? "sing-box не запустился"
-            connectionState = .error(stripAnsi(errMsg))
+            let fatal = lines.first { $0.contains("FATAL") || $0.contains("fatal") }
+            connectionState = .error(stripAnsi(fatal ?? lines.last ?? "sing-box не запустился"))
         }
-    }
-
-    // Check if process is alive using `kill -0` via shell (avoids sandbox URLSession issue)
-    private func checkPIDAlive(_ pidString: String) -> Bool {
-        guard !pidString.isEmpty, let pid = Int32(pidString) else { return false }
-        return kill(pid, 0) == 0
-    }
-
-    private func monitorPID(_ pid: Int32) {
-        Task.detached { [weak self] in
-            while true {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                let alive = kill(pid, 0) == 0
-                if !alive {
-                    await MainActor.run { [weak self] in
-                        guard let self = self else { return }
-                        if self.connectionState == .connected {
-                            let log = (try? String(contentsOfFile: "/tmp/singbox.log", encoding: .utf8)) ?? ""
-                            let lines = log.components(separatedBy: "\n").filter { !$0.isEmpty }
-                            let fatalLine = lines.first(where: { $0.contains("FATAL") || $0.contains("fatal") })
-                            let msg = self.stripAnsi(fatalLine ?? "sing-box завершился неожиданно")
-                            self.connectionState = .error(msg)
-                            self.stopTimers()
-                        }
-                    }
-                    break
-                }
-            }
-        }
-    }
-
-    private func stripAnsi(_ str: String) -> String {
-        str.replacingOccurrences(of: "\\[\\d+m", with: "", options: .regularExpression)
-           .replacingOccurrences(of: "[33m", with: "")
-           .replacingOccurrences(of: "[31m", with: "")
-           .replacingOccurrences(of: "[0m", with: "")
-           .replacingOccurrences(of: "[0000]", with: "")
-           .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func disconnect() {
@@ -146,20 +116,17 @@ final class SingBoxManager: ObservableObject {
         connectionState = .disconnecting
         stopTimers()
 
-        let killProc = Process()
-        killProc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        killProc.arguments = ["-e", "do shell script \"pkill -f sing-box\" with administrator privileges"]
-        try? killProc.run()
-        killProc.waitUntilExit()
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-e", "do shell script \"pkill -f sing-box\" with administrator privileges"]
+        try? proc.run()
+        proc.waitUntilExit()
 
-        singboxPID = nil
         connectionState = .disconnected
         trafficStats = TrafficStats()
         elapsedTime = 0
         connectTime = nil
     }
-
-    // MARK: - Timers
 
     private func startTimers() {
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -178,13 +145,10 @@ final class SingBoxManager: ObservableObject {
         elapsedTimer?.invalidate(); elapsedTimer = nil
     }
 
-    // MARK: - Traffic Stats (via curl to avoid sandbox URLSession restrictions)
-
     private func pollTrafficStats() async {
-        let result = await runShell("curl -s http://127.0.0.1:9090/connections")
+        let result = await runShellAsync("curl -s --max-time 1 http://\(clashAPIBase)/connections")
         guard let data = result.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-
         let dlTotal = json["downloadTotal"] as? Int64 ?? 0
         let ulTotal = json["uploadTotal"] as? Int64 ?? 0
         let dlSpeed = dlTotal - trafficStats.totalDownload
@@ -197,38 +161,24 @@ final class SingBoxManager: ObservableObject {
         )
     }
 
-    private func runShell(_ command: String) async -> String {
-        await withCheckedContinuation { continuation in
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/bin/sh")
-            proc.arguments = ["-c", command]
-            let pipe = Pipe()
-            proc.standardOutput = pipe
-            proc.standardError = FileHandle.nullDevice
-            try? proc.run()
-            proc.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            continuation.resume(returning: String(data: data, encoding: .utf8) ?? "")
-        }
+    private func stripAnsi(_ str: String) -> String {
+        str.replacingOccurrences(of: "\\[\\d+m", with: "", options: .regularExpression)
+           .replacingOccurrences(of: "[33m", with: "").replacingOccurrences(of: "[31m", with: "")
+           .replacingOccurrences(of: "[0m", with: "").replacingOccurrences(of: "[0000]", with: "")
+           .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func formatSpeed(_ bytesPerSecond: Int64) -> String {
         let units = ["B/s", "KB/s", "MB/s", "GB/s"]
         var value = Double(bytesPerSecond)
         var unitIndex = 0
-        while value >= 1024 && unitIndex < units.count - 1 {
-            value /= 1024
-            unitIndex += 1
-        }
+        while value >= 1024 && unitIndex < units.count - 1 { value /= 1024; unitIndex += 1 }
         if unitIndex == 0 { return "\(Int(value)) \(units[unitIndex])" }
         return String(format: "%.1f %@", value, units[unitIndex])
     }
 
     var formattedElapsed: String {
         let total = Int(elapsedTime)
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        let s = total % 60
-        return String(format: "%02d:%02d:%02d", h, m, s)
+        return String(format: "%02d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
     }
 }

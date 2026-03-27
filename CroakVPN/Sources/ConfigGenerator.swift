@@ -61,7 +61,7 @@ enum ConfigGenerator {
             }
         }
 
-        // Add urltest group for auto server selection
+        // Auto-select fastest server
         if configs.count > 1 {
             outbounds.append([
                 "type": "urltest",
@@ -73,24 +73,28 @@ enum ConfigGenerator {
             ])
         }
 
+        // sing-box 1.13: use direct outbound only, block via route action
         outbounds.append(["type": "direct", "tag": "direct"])
-        outbounds.append(["type": "block", "tag": "block"])
 
-        // Build route rules
+        // Build route rules (sing-box 1.13 style)
         var routeRules: [[String: Any]] = [
             ["action": "sniff"],
             ["protocol": "dns", "action": "hijack-dns"]
         ]
 
+        // Route VPN server IPs directly (bypass TUN)
         if !serverAddresses.isEmpty {
             routeRules.append([
                 "ip_cidr": Array(serverAddresses),
+                "action": "route",
                 "outbound": "direct"
             ])
         }
 
+        // Local network — direct
         routeRules.append([
             "ip_is_private": true,
+            "action": "route",
             "outbound": "direct"
         ])
 

@@ -22,10 +22,10 @@ jobs:
 
       - name: Download sing-box binary
         run: |
-          curl -L -o singbox.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v1.11.4/sing-box-1.11.4-darwin-arm64.tar.gz"
+          curl -L -o singbox.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v1.13.4/sing-box-1.13.4-darwin-arm64.tar.gz"
           tar -xzf singbox.tar.gz
           mkdir -p CroakVPN/Resources
-          cp sing-box-1.11.4-darwin-arm64/sing-box CroakVPN/Resources/sing-box
+          cp sing-box-1.13.4-darwin-arm64/sing-box CroakVPN/Resources/sing-box
           chmod +x CroakVPN/Resources/sing-box
           CroakVPN/Resources/sing-box version
 
@@ -44,13 +44,17 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: Verify and inject sing-box
+      - name: Inject resources into bundle
         run: |
           APP="build/Build/Products/Release/CroakVPN.app"
           mkdir -p "$APP/Contents/Resources"
           cp CroakVPN/Resources/sing-box "$APP/Contents/Resources/sing-box"
           chmod +x "$APP/Contents/Resources/sing-box"
-          ls -lh "$APP/Contents/Resources/sing-box"
+          if [ -f "CroakVPN/Resources/AppIcon.icns" ]; then
+            cp CroakVPN/Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+            echo "AppIcon.icns injected"
+          fi
+          ls -lh "$APP/Contents/Resources/"
 
       - name: Package
         run: |
