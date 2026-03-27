@@ -25,32 +25,28 @@ final class SingBoxManager: ObservableObject {
         return paths.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    @discardableResult
-    private func runShell(_ command: String) -> String {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
-        proc.arguments = ["-c", command]
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
-        try? proc.run()
-        proc.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    }
-
-    private func runShellAsync(_ command: String) async -> String {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global().async {
-                continuation.resume(returning: self.runShell(command))
+    private func shell(_ cmd: String) async -> (String, Int32) {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/sh")
+                p.arguments = ["-c", cmd]
+                let pipe = Pipe()
+                p.standardOutput = pipe
+                p.standardError = Pipe()
+                try? p.run()
+                p.waitUntilExit()
+                let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                cont.resume(returning: (out, p.terminationStatus))
             }
         }
     }
 
     private func checkAPI() async -> Bool {
-        for _ in 0..<10 {
-            let result = await runShellAsync("curl -s --max-time 1 http://\(clashAPIBase)/version")
-            if result.contains("sing-box") { return true }
+        for _ in 0..<12 {
+            let (out, _) = await shell("curl -s --connect-timeout 1 --max-time 1 http://\(clashAPIBase)/version")
+            if out.contains("sing-box") { return true }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
         return false
@@ -76,23 +72,14 @@ final class SingBoxManager: ObservableObject {
 
         let configFile = PrefsManager.shared.singboxConfigPath.path
         let logFile = NSHomeDirectory() + "/singbox_croak.log"
+        let scriptPath = NSTemporaryDirectory() + "croak_launch.applescript"
 
-        let script = "do shell script \"pkill -f sing-box; sleep 0.3; '\(singboxPath)' run -c '\(configFile)' > '\(logFile)' 2>&1 &\" with administrator privileges"
+        let appleScript = "do shell script \"pkill -f sing-box; sleep 0.3; \(singboxPath) run -c \(configFile) > \(logFile) 2>&1 &\" with administrator privileges"
+        try? appleScript.write(toFile: scriptPath, atomically: true, encoding: .utf8)
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", script]
-        proc.standardError = FileHandle.nullDevice
+        let (_, status) = await shell("/usr/bin/osascript '\(scriptPath)'")
 
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-        } catch {
-            connectionState = .error(error.localizedDescription)
-            return
-        }
-
-        if proc.terminationStatus != 0 {
+        if status != 0 {
             connectionState = .disconnected
             return
         }
@@ -116,16 +103,19 @@ final class SingBoxManager: ObservableObject {
         connectionState = .disconnecting
         stopTimers()
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-e", "do shell script \"pkill -f sing-box\" with administrator privileges"]
-        try? proc.run()
-        proc.waitUntilExit()
+        let scriptPath = NSTemporaryDirectory() + "croak_kill.applescript"
+        let appleScript = "do shell script \"pkill -f sing-box\" with administrator privileges"
+        try? appleScript.write(toFile: scriptPath, atomically: true, encoding: .utf8)
 
-        connectionState = .disconnected
-        trafficStats = TrafficStats()
-        elapsedTime = 0
-        connectTime = nil
+        Task {
+            await shell("/usr/bin/osascript '\(scriptPath)'")
+            await MainActor.run {
+                self.connectionState = .disconnected
+                self.trafficStats = TrafficStats()
+                self.elapsedTime = 0
+                self.connectTime = nil
+            }
+        }
     }
 
     private func startTimers() {
@@ -146,7 +136,7 @@ final class SingBoxManager: ObservableObject {
     }
 
     private func pollTrafficStats() async {
-        let result = await runShellAsync("curl -s --max-time 1 http://\(clashAPIBase)/connections")
+        let (result, _) = await shell("curl -s --max-time 1 http://\(clashAPIBase)/connections")
         guard let data = result.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         let dlTotal = json["downloadTotal"] as? Int64 ?? 0
