@@ -87,7 +87,8 @@ enum ConfigGenerator {
             "route": [
                 "rules": routeRules,
                 "auto_detect_interface": true,
-                "final": "proxy"
+                "final": "proxy",
+                "default_domain_resolver": "local"
             ]
         ]
 
