@@ -65,8 +65,8 @@ enum ConfigGenerator {
             "experimental": ["clash_api": ["external_controller": "127.0.0.1:9090", "secret": ""]],
             "dns": [
                 "servers": [
-                    ["tag": "remote", "address": "tls://8.8.8.8", "detour": "proxy"],
-                    ["tag": "local", "address": "udp://1.1.1.1"]
+                    ["tag": "remote", "type": "tls", "server": "8.8.8.8", "detour": "proxy"],
+                    ["tag": "local", "type": "udp", "server": "1.1.1.1"]
                 ],
                 "rules": [["ip_is_private": true, "server": "local"]],
                 "final": "remote", "strategy": "ipv4_only"
