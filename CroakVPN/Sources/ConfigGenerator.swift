@@ -13,7 +13,8 @@ enum ConfigGenerator {
 
             var outbound: [String: Any] = [
                 "type": config.protocol, "tag": tag,
-                "server": config.address, "server_port": config.port, "uuid": config.uuid
+                "server": config.address, "server_port": config.port, "uuid": config.uuid,
+                "domain_resolver": "local"
             ]
 
             if let flow = config.flow, !flow.isEmpty { outbound["flow"] = flow }
@@ -48,11 +49,8 @@ enum ConfigGenerator {
             ])
         }
 
-        // sing-box 1.13: only direct outbound, no block (use reject action in rules)
         outbounds.append(["type": "direct", "tag": "direct"])
 
-        // Route rules — sing-box 1.13 style
-        // sniff is now a route action, not an inbound field
         var routeRules: [[String: Any]] = [
             ["action": "sniff"],
             ["protocol": "dns", "action": "hijack-dns"]
@@ -61,8 +59,7 @@ enum ConfigGenerator {
         if !serverAddresses.isEmpty {
             routeRules.append([
                 "ip_cidr": Array(serverAddresses),
-                "action": "route",
-                "outbound": "direct"
+                "action": "route", "outbound": "direct"
             ])
         }
         routeRules.append(["ip_is_private": true, "action": "route", "outbound": "direct"])
@@ -72,7 +69,6 @@ enum ConfigGenerator {
             "experimental": [
                 "clash_api": ["external_controller": "127.0.0.1:9090", "secret": ""]
             ],
-            // sing-box 1.13 DNS format: type + server instead of address URL
             "dns": [
                 "servers": [
                     ["tag": "remote", "type": "tls", "server": "8.8.8.8", "detour": "proxy"],
@@ -82,14 +78,10 @@ enum ConfigGenerator {
                 "final": "remote",
                 "strategy": "ipv4_only"
             ],
-            // sing-box 1.13 TUN: no sniff/sniff_override_destination fields
             "inbounds": [[
-                "type": "tun",
-                "tag": "tun-in",
+                "type": "tun", "tag": "tun-in",
                 "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
-                "auto_route": true,
-                "strict_route": false,
-                "stack": "system"
+                "auto_route": true, "strict_route": false, "stack": "system"
             ]],
             "outbounds": outbounds,
             "route": [
