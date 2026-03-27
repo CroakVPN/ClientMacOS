@@ -43,6 +43,13 @@ final class SingBoxManager: ObservableObject {
 
         connectionState = .connecting
 
+        // Kill any leftover sing-box processes
+        let cleanup = Process()
+            cleanup.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            cleanup.arguments = ["-e", "do shell script \"pkill -f sing-box; sleep 0.5\" with administrator privileges"]
+        try? cleanup.run()
+            cleanup.waitUntilExit()
+
         guard let singboxPath = findSingBox() else {
             connectionState = .error("sing-box не найден")
             return
