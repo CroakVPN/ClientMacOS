@@ -75,7 +75,6 @@ final class SingBoxManager: ObservableObject {
             return
         }
 
-        // If user cancelled password dialog
         if proc.terminationStatus != 0 {
             connectionState = .disconnected
             return
@@ -85,10 +84,7 @@ final class SingBoxManager: ObservableObject {
         let pidString = String(data: pidData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         singboxPID = Int32(pidString)
 
-        // Wait for sing-box to initialize
-        do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch {}
-
-        // Check via Clash API
+        // Check via Clash API with retries (up to 8 seconds)
         let isRunning = await checkClashAPI()
 
         if isRunning {
@@ -107,12 +103,14 @@ final class SingBoxManager: ObservableObject {
 
     private func checkClashAPI() async -> Bool {
         guard let url = URL(string: "\(clashAPIBase)/version") else { return false }
-        do {
-            let (_, response) = try await URLSession.shared.data(from: url)
-            return (response as? HTTPURLResponse)?.statusCode == 200
-        } catch {
-            return false
+        for _ in 0..<8 {
+            do {
+                let (_, response) = try await URLSession.shared.data(from: url)
+                if (response as? HTTPURLResponse)?.statusCode == 200 { return true }
+            } catch {}
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
+        return false
     }
 
     private func monitorPID(_ pid: Int32) {
