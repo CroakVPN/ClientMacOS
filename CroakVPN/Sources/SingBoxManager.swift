@@ -20,15 +20,11 @@ final class SingBoxManager: ObservableObject {
 
     // MARK: - Locate sing-box binary
 
-    /// Looks for sing-box in the app bundle first, then in common system paths.
     private func findSingBox() -> String? {
-        // 1. Bundled binary inside .app/Contents/Resources/sing-box
         if let bundled = Bundle.main.resourceURL?.appendingPathComponent("sing-box").path,
            FileManager.default.isExecutableFile(atPath: bundled) {
             return bundled
         }
-
-        // 2. Common system paths
         let paths = [
             "/usr/local/bin/sing-box",
             "/opt/homebrew/bin/sing-box",
@@ -48,7 +44,7 @@ final class SingBoxManager: ObservableObject {
         connectionState = .connecting
 
         guard let singboxPath = findSingBox() else {
-            connectionState = .error("sing-box не найден. Поместите бинарник в Resources приложения или установите через brew install sing-box")
+            connectionState = .error("sing-box не найден")
             return
         }
 
@@ -60,60 +56,103 @@ final class SingBoxManager: ObservableObject {
         let configFile = PrefsManager.shared.singboxConfigPath.path
 
         do {
+            // Use osascript to run sing-box with admin privileges (needed for TUN)
+            // We wrap it in a background shell so it keeps running
+            let script = "do shell script \"\(singboxPath) run -c '\(configFile)' > /tmp/singbox.log 2>&1 & echo $!\" with administrator privileges"
+
             let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: singboxPath)
-            proc.arguments = ["run", "-c", configFile]
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            proc.arguments = ["-e", script]
 
+            let outPipe = Pipe()
             let errPipe = Pipe()
+            proc.standardOutput = outPipe
             proc.standardError = errPipe
-            proc.standardOutput = FileHandle.nullDevice
-
-            proc.terminationHandler = { [weak self] p in
-                Task { @MainActor [weak self] in
-                    guard let self = self else { return }
-                    if self.connectionState == .connected || self.connectionState == .connecting {
-                        // Unexpected termination
-                        let errData = errPipe.fileHandleForReading.availableData
-                        let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                        self.connectionState = .error(errMsg.isEmpty ? "sing-box завершился неожиданно" : errMsg)
-                        self.stopTimers()
-                    }
-                }
-            }
 
             try proc.run()
-            self.process = proc
+            proc.waitUntilExit()
 
-            // Wait a bit for sing-box to start, then verify via clash API
-            try await Task.sleep(nanoseconds: 1_500_000_000) // 1.5s
+            // Get the PID of the background sing-box process
+            let pidData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let pidString = String(data: pidData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-            if proc.isRunning {
+            if proc.terminationStatus != 0 {
+                let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                let errMsg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Ошибка запуска"
+                connectionState = .error(errMsg)
+                return
+            }
+
+            // Wait for sing-box to initialize
+            try await Task.sleep(nanoseconds: 2_000_000_000) // 2s
+
+            // Check if sing-box is running by querying clash API
+            let isRunning = await checkClashAPI()
+
+            if isRunning {
                 connectionState = .connected
                 connectTime = Date()
                 startTimers()
+
+                // Monitor the process via PID
+                if let pid = Int32(pidString) {
+                    monitorPID(pid)
+                }
             } else {
-                connectionState = .error("sing-box не запустился")
+                // Read log for error details
+                let log = (try? String(contentsOfFile: "/tmp/singbox.log", encoding: .utf8)) ?? ""
+                let lastLine = log.components(separatedBy: "\n").filter { !$0.isEmpty }.last ?? "sing-box не запустился"
+                connectionState = .error(lastLine)
             }
         } catch {
             connectionState = .error(error.localizedDescription)
         }
     }
 
-    func disconnect() {
-        guard connectionState == .connected || connectionState == .connecting else { return }
-        connectionState = .disconnecting
+    private func checkClashAPI() async -> Bool {
+        guard let url = URL(string: "\(clashAPIBase)/version") else { return false }
+        do {
+            let (_, response) = try await URLSession.shared.data(from: url)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            return false
+        }
+    }
 
-        stopTimers()
-
-        if let proc = process, proc.isRunning {
-            proc.terminate()
-            // Give it a moment to exit gracefully
-            DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
-                if proc.isRunning {
-                    proc.interrupt()
+    private func monitorPID(_ pid: Int32) {
+        Task.detached { [weak self] in
+            // Poll every 2 seconds to check if process is still alive
+            while true {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let alive = kill(pid, 0) == 0
+                if !alive {
+                    await MainActor.run { [weak self] in
+                        guard let self = self else { return }
+                        if self.connectionState == .connected {
+                            let log = (try? String(contentsOfFile: "/tmp/singbox.log", encoding: .utf8)) ?? ""
+                            let lastLine = log.components(separatedBy: "\n").filter { !$0.isEmpty }.last ?? "sing-box завершился неожиданно"
+                            self.connectionState = .error(lastLine)
+                            self.stopTimers()
+                        }
+                    }
+                    break
                 }
             }
         }
+    }
+
+    func disconnect() {
+        guard connectionState == .connected || connectionState == .connecting else { return }
+        connectionState = .disconnecting
+        stopTimers()
+
+        // Kill sing-box by name (it runs as root via sudo)
+        let killProc = Process()
+        killProc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        killProc.arguments = ["-e", "do shell script \"pkill -f sing-box\" with administrator privileges"]
+        try? killProc.run()
+        killProc.waitUntilExit()
+
         process = nil
         connectionState = .disconnected
         trafficStats = TrafficStats()
@@ -124,14 +163,11 @@ final class SingBoxManager: ObservableObject {
     // MARK: - Timers
 
     private func startTimers() {
-        // Poll traffic stats every second via clash API
         statsTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 await self?.pollTrafficStats()
             }
         }
-
-        // Update elapsed time every second
         elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self = self, let start = self.connectTime else { return }
@@ -147,23 +183,17 @@ final class SingBoxManager: ObservableObject {
         elapsedTimer = nil
     }
 
-    // MARK: - Traffic Stats via Clash API
+    // MARK: - Traffic Stats
 
     private func pollTrafficStats() async {
-        guard URL(string: "\(clashAPIBase)/traffic") != nil else { return }
-
-        // Clash API /traffic is a streaming endpoint. We do a quick GET to /connections instead.
         guard let connURL = URL(string: "\(clashAPIBase)/connections") else { return }
-
         do {
             let (data, _) = try await URLSession.shared.data(from: connURL)
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 let dlTotal = json["downloadTotal"] as? Int64 ?? 0
                 let ulTotal = json["uploadTotal"] as? Int64 ?? 0
-
                 let dlSpeed = dlTotal - trafficStats.totalDownload
                 let ulSpeed = ulTotal - trafficStats.totalUpload
-
                 trafficStats = TrafficStats(
                     downloadSpeed: formatSpeed(dlSpeed > 0 ? dlSpeed : 0),
                     uploadSpeed: formatSpeed(ulSpeed > 0 ? ulSpeed : 0),
@@ -171,9 +201,7 @@ final class SingBoxManager: ObservableObject {
                     totalUpload: ulTotal
                 )
             }
-        } catch {
-            // Clash API not responding — ignore silently
-        }
+        } catch {}
     }
 
     private func formatSpeed(_ bytesPerSecond: Int64) -> String {
@@ -184,13 +212,9 @@ final class SingBoxManager: ObservableObject {
             value /= 1024
             unitIndex += 1
         }
-        if unitIndex == 0 {
-            return "\(Int(value)) \(units[unitIndex])"
-        }
+        if unitIndex == 0 { return "\(Int(value)) \(units[unitIndex])" }
         return String(format: "%.1f %@", value, units[unitIndex])
     }
-
-    // MARK: - Formatted elapsed time
 
     var formattedElapsed: String {
         let total = Int(elapsedTime)
