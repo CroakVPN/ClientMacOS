@@ -140,7 +140,6 @@ enum ConfigGenerator {
             ],
             "outbounds": outbounds,
             "route": [
-                "default_domain_resolver": "local",
                 "rules": routeRules,
                 "auto_detect_interface": true,
                 "final": "proxy"
