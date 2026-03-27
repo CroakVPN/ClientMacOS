@@ -48,37 +48,55 @@ enum ConfigGenerator {
             ])
         }
 
+        // sing-box 1.13: only direct outbound, no block (use reject action in rules)
         outbounds.append(["type": "direct", "tag": "direct"])
 
+        // Route rules — sing-box 1.13 style
+        // sniff is now a route action, not an inbound field
         var routeRules: [[String: Any]] = [
             ["action": "sniff"],
             ["protocol": "dns", "action": "hijack-dns"]
         ]
 
         if !serverAddresses.isEmpty {
-            routeRules.append(["ip_cidr": Array(serverAddresses), "action": "route", "outbound": "direct"])
+            routeRules.append([
+                "ip_cidr": Array(serverAddresses),
+                "action": "route",
+                "outbound": "direct"
+            ])
         }
         routeRules.append(["ip_is_private": true, "action": "route", "outbound": "direct"])
 
         let root: [String: Any] = [
             "log": ["level": "warn", "timestamp": true],
-            "experimental": ["clash_api": ["external_controller": "127.0.0.1:9090", "secret": ""]],
+            "experimental": [
+                "clash_api": ["external_controller": "127.0.0.1:9090", "secret": ""]
+            ],
+            // sing-box 1.13 DNS format: type + server instead of address URL
             "dns": [
                 "servers": [
                     ["tag": "remote", "type": "tls", "server": "8.8.8.8", "detour": "proxy"],
                     ["tag": "local", "type": "udp", "server": "1.1.1.1"]
                 ],
                 "rules": [["ip_is_private": true, "server": "local"]],
-                "final": "remote", "strategy": "ipv4_only"
+                "final": "remote",
+                "strategy": "ipv4_only"
             ],
+            // sing-box 1.13 TUN: no sniff/sniff_override_destination fields
             "inbounds": [[
-                "type": "tun", "tag": "tun-in",
+                "type": "tun",
+                "tag": "tun-in",
                 "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
-                "auto_route": true, "strict_route": false,
-                "stack": "system", "sniff": true, "sniff_override_destination": false
+                "auto_route": true,
+                "strict_route": false,
+                "stack": "system"
             ]],
             "outbounds": outbounds,
-            "route": ["rules": routeRules, "auto_detect_interface": true, "final": "proxy"]
+            "route": [
+                "rules": routeRules,
+                "auto_detect_interface": true,
+                "final": "proxy"
+            ]
         ]
 
         guard let data = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]),
