@@ -82,7 +82,6 @@ enum ConfigGenerator {
             ["protocol": "dns", "action": "hijack-dns"]
         ]
 
-        // Route traffic TO VPN servers directly, bypassing TUN/proxy
         if !serverAddresses.isEmpty {
             routeRules.append([
                 "ip_cidr": Array(serverAddresses),
@@ -110,14 +109,12 @@ enum ConfigGenerator {
                 "servers": [
                     [
                         "tag": "remote",
-                        "type": "tls",
-                        "server": "8.8.8.8",
+                        "address": "tls://8.8.8.8",
                         "detour": "proxy"
                     ],
                     [
                         "tag": "local",
-                        "type": "udp",
-                        "server": "1.1.1.1"
+                        "address": "udp://1.1.1.1"
                     ]
                 ],
                 "rules": [
