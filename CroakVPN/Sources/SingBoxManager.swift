@@ -74,7 +74,7 @@ final class SingBoxManager: ObservableObject {
         let logFile = NSHomeDirectory() + "/singbox_croak.log"
         let scriptPath = NSTemporaryDirectory() + "croak_launch.applescript"
 
-        let appleScript = "do shell script \"pkill -f sing-box; sleep 0.3; \(singboxPath) run -c \(configFile) > \(logFile) 2>&1 &\" with administrator privileges"
+        let appleScript = "do shell script \"pkill -f sing-box; sleep 0.3; '\(singboxPath)' run -c '\(configFile)' > '\(logFile)' 2>&1 &\" with administrator privileges"
         try? appleScript.write(toFile: scriptPath, atomically: true, encoding: .utf8)
 
         let (_, status) = await shell("/usr/bin/osascript '\(scriptPath)'")
