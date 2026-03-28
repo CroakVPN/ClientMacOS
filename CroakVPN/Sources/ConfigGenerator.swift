@@ -57,15 +57,38 @@ enum ConfigGenerator {
         ]
 
         if !serverAddresses.isEmpty {
-            routeRules.append([
-                "ip_cidr": Array(serverAddresses),
-                "action": "route", "outbound": "direct"
-            ])
+            // Разделяем IP-адреса и доменные имена
+            var ipCidrs: [String] = []
+            var domains: [String] = []
+            for addr in serverAddresses {
+                if addr.contains(":") {
+                    // IPv6
+                    ipCidrs.append(addr.contains("/") ? addr : "\(addr)/128")
+                } else if addr.allSatisfy({ $0.isNumber || $0 == "." || $0 == "/" }) {
+                    // IPv4
+                    ipCidrs.append(addr.contains("/") ? addr : "\(addr)/32")
+                } else {
+                    // Домен
+                    domains.append(addr)
+                }
+            }
+            if !ipCidrs.isEmpty {
+                routeRules.append([
+                    "ip_cidr": ipCidrs,
+                    "action": "route", "outbound": "direct"
+                ])
+            }
+            if !domains.isEmpty {
+                routeRules.append([
+                    "domain": domains,
+                    "action": "route", "outbound": "direct"
+                ])
+            }
         }
         routeRules.append(["ip_is_private": true, "action": "route", "outbound": "direct"])
 
         let root: [String: Any] = [
-            "log": ["level": "warn", "timestamp": true],
+            "log": ["level": "info", "timestamp": true],
             "experimental": [
                 "clash_api": ["external_controller": "127.0.0.1:9090", "secret": ""]
             ],

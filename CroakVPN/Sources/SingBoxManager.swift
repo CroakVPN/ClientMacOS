@@ -36,14 +36,33 @@ final class SingBoxManager: ObservableObject {
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: "/bin/sh")
                 p.arguments = ["-c", cmd]
-                let pipe = Pipe()
-                p.standardOutput = pipe
-                p.standardError = Pipe()
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                p.standardOutput = outPipe
+                p.standardError = errPipe
+                // Читаем данные ДО waitUntilExit, чтобы избежать deadlock при переполнении буфера
+                var outData = Data()
+                var errData = Data()
+                outPipe.fileHandleForReading.readabilityHandler = { handle in
+                    outData.append(handle.availableData)
+                }
+                errPipe.fileHandleForReading.readabilityHandler = { handle in
+                    errData.append(handle.availableData)
+                }
                 try? p.run()
                 p.waitUntilExit()
-                let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                outPipe.fileHandleForReading.readabilityHandler = nil
+                errPipe.fileHandleForReading.readabilityHandler = nil
+                // Дочитываем остаток
+                outData.append(outPipe.fileHandleForReading.readDataToEndOfFile())
+                errData.append(errPipe.fileHandleForReading.readDataToEndOfFile())
+                let out = String(data: outData, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                cont.resume(returning: (out, p.terminationStatus))
+                let err = String(data: errData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                // Возвращаем stdout, а если он пуст — stderr
+                let result = out.isEmpty ? err : out
+                cont.resume(returning: (result, p.terminationStatus))
             }
         }
     }
@@ -96,10 +115,11 @@ chown root:wheel '\(sudoersFile)'
     // MARK: - API check
 
     private func checkAPI() async -> Bool {
-        for _ in 0..<15 {
-            let (out, _) = await shell("curl -s --connect-timeout 1 --max-time 1 http://\(clashAPIBase)/version")
+        for i in 0..<20 {
+            let timeout = i < 5 ? 1 : 2
+            let (out, _) = await shell("curl -s --connect-timeout \(timeout) --max-time \(timeout) http://\(clashAPIBase)/version")
             if out.contains("sing-box") { return true }
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
         }
         return false
     }
@@ -139,9 +159,10 @@ chown root:wheel '\(sudoersFile)'
         // Запуск sing-box через sudo — без пароля
         let startScript = """
 #!/bin/sh
-/usr/bin/pkill -x sing-box 2>/dev/null
-sleep 0.3
-sudo '\(singboxPath)' run -c '\(configFile)' > '\(logFile)' 2>&1 &
+sudo /usr/bin/pkill -x sing-box 2>/dev/null
+sleep 0.5
+sudo '\(singboxPath)' run -c '\(configFile)' >'\(logFile)' 2>&1 &
+sleep 1
 """
         let startPath = NSTemporaryDirectory() + "croakvpn_start.sh"
         try? startScript.write(toFile: startPath, atomically: true, encoding: .utf8)
@@ -155,10 +176,24 @@ sudo '\(singboxPath)' run -c '\(configFile)' > '\(logFile)' 2>&1 &
             connectTime = Date()
             startTimers()
         } else {
+            // Проверяем, жив ли процесс
+            let (pgrep, _) = await shell("pgrep -x sing-box")
+            let processAlive = !pgrep.isEmpty
+
             let log = (try? String(contentsOfFile: logFile, encoding: .utf8)) ?? ""
             let lines = log.components(separatedBy: "\n").filter { !$0.isEmpty }
-            let fatal = lines.first { $0.contains("FATAL") || $0.contains("fatal") }
-            connectionState = .error(stripAnsi(fatal ?? lines.last ?? "sing-box не запустился"))
+            let fatal = lines.first { $0.contains("FATAL") || $0.contains("fatal") || $0.contains("error") || $0.contains("Error") }
+            let lastLines = lines.suffix(3).joined(separator: "\n")
+
+            let errorMsg: String
+            if !log.isEmpty {
+                errorMsg = stripAnsi(fatal ?? lastLines)
+            } else if !processAlive {
+                errorMsg = "sing-box завершился сразу. Проверьте конфигурацию или переустановите sing-box."
+            } else {
+                errorMsg = "sing-box не запустился (API недоступен). Попробуйте переподключиться."
+            }
+            connectionState = .error(errorMsg)
         }
     }
 
