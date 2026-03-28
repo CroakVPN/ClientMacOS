@@ -189,18 +189,25 @@ chown root:wheel '\(sudoersFile)'
             }
         }
 
-        // Запуск sing-box через sudo — без пароля
-        let startScript = """
-#!/bin/sh
-sudo /usr/bin/pkill -x sing-box 2>/dev/null
-sleep 0.5
-sudo '\(singboxPath)' run -c '\(configFile)' >'\(logFile)' 2>&1 &
-sleep 1
-"""
-        let startPath = NSTemporaryDirectory() + "croakvpn_start.sh"
-        try? startScript.write(toFile: startPath, atomically: true, encoding: .utf8)
-        await shell("chmod +x '\(startPath)'")
-        await shell("sh '\(startPath)'")
+        // Убиваем предыдущий процесс
+        await shell("sudo -n /usr/bin/pkill -x sing-box 2>/dev/null")
+        try? await Task.sleep(nanoseconds: 500_000_000)
+
+        // Запуск sing-box напрямую через Process (без промежуточных sh-скриптов)
+        let launched = await launchSingBox(
+            sudoPath: "/usr/bin/sudo",
+            singboxPath: singboxPath,
+            configFile: configFile,
+            logFile: logFile
+        )
+
+        if !launched {
+            connectionState = .error("Не удалось запустить sing-box")
+            return
+        }
+
+        // Даём процессу время подняться
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
 
         let isRunning = await checkAPI()
 
@@ -238,12 +245,48 @@ sleep 1
         stopTimers()
 
         Task {
-            await shell("sudo /usr/bin/pkill -x sing-box 2>/dev/null")
+            await shell("sudo -n /usr/bin/pkill -x sing-box 2>/dev/null")
             await MainActor.run {
                 self.connectionState = .disconnected
                 self.trafficStats = TrafficStats()
                 self.elapsedTime = 0
                 self.connectTime = nil
+            }
+        }
+    }
+
+    // MARK: - Launch sing-box process
+
+    /// Запускает sing-box напрямую через Process, без промежуточных shell-скриптов.
+    /// Лог пишется в файл. Процесс запускается в фоне и не блокирует.
+    private func launchSingBox(sudoPath: String, singboxPath: String, configFile: String, logFile: String) async -> Bool {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    // Создаём/очищаем лог-файл
+                    FileManager.default.createFile(atPath: logFile, contents: nil)
+                    guard let logHandle = FileHandle(forWritingAtPath: logFile) else {
+                        cont.resume(returning: false)
+                        return
+                    }
+
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: sudoPath)
+                    process.arguments = ["-n", singboxPath, "run", "-c", configFile]
+                    process.standardOutput = logHandle
+                    process.standardError = logHandle
+
+                    // Не ждём завершения — sing-box работает как демон
+                    try process.run()
+
+                    // Даём немного времени на старт
+                    Thread.sleep(forTimeInterval: 0.5)
+
+                    cont.resume(returning: process.isRunning)
+                } catch {
+                    print("[CroakVPN] Failed to launch sing-box: \(error)")
+                    cont.resume(returning: false)
+                }
             }
         }
     }
