@@ -103,8 +103,12 @@ final class SingBoxManager: ObservableObject {
 
     // MARK: - Sudoers (один раз навсегда)
 
-    private var sudoersInstalled: Bool {
-        FileManager.default.fileExists(atPath: sudoersFile)
+    /// Проверяет, работает ли sudo sing-box без пароля (быстрый тест).
+    /// Учитывает случай перемещения приложения (Downloads → Applications):
+    /// sudoers содержит старый путь → sudo -n не сработает → пересоздаём.
+    private func sudoWorksWithoutPassword(singboxPath: String) async -> Bool {
+        let (out, status) = await shell("sudo -n '\(singboxPath)' version 2>/dev/null")
+        return status == 0 && out.contains("sing-box")
     }
 
     /// Устанавливает sudoers — один запрос пароля, потом навсегда без пароля.
@@ -175,8 +179,9 @@ chown root:wheel '\(sudoersFile)'
         let configFile = PrefsManager.shared.singboxConfigPath.path
         let logFile = NSHomeDirectory() + "/singbox_croak.log"
 
-        // Первый запуск — устанавливаем sudoers (один запрос пароля)
-        if !sudoersInstalled {
+        // Проверяем, работает ли sudo без пароля (учитывает перемещение приложения)
+        let sudoWorks = await sudoWorksWithoutPassword(singboxPath: singboxPath)
+        if !sudoWorks {
             let ok = await installSudoers(singboxPath: singboxPath)
             if !ok {
                 connectionState = .disconnected
