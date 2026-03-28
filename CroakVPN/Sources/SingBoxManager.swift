@@ -15,7 +15,7 @@ final class SingBoxManager: ObservableObject {
     private var connectTime: Date?
 
     private let clashAPIBase = "127.0.0.1:9090"
-    private let sudoersPath = "/etc/sudoers.d/croakvpn"
+    private let sudoersFile = "/etc/sudoers.d/croakvpn"
 
     // MARK: - Find sing-box binary
 
@@ -28,7 +28,7 @@ final class SingBoxManager: ObservableObject {
         return paths.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    // MARK: - Shell helpers
+    // MARK: - Shell
 
     private func shell(_ cmd: String) async -> (String, Int32) {
         await withCheckedContinuation { cont in
@@ -48,48 +48,55 @@ final class SingBoxManager: ObservableObject {
         }
     }
 
+    // Запуск shell-скрипта с правами администратора через AppleScript
     @discardableResult
-    private func runAppleScript(_ script: String) async -> Int32 {
-        let path = NSTemporaryDirectory() + "croak.applescript"
-        try? script.write(toFile: path, atomically: true, encoding: .utf8)
-        let (_, status) = await shell("/usr/bin/osascript '\(path)'")
+    private func runAsAdmin(_ scriptPath: String) async -> Int32 {
+        let appleScript = "do shell script \"sh '\(scriptPath)'\" with administrator privileges"
+        let asPath = NSTemporaryDirectory() + "croakvpn.applescript"
+        try? appleScript.write(toFile: asPath, atomically: true, encoding: .utf8)
+        let (_, status) = await shell("/usr/bin/osascript '\(asPath)'")
         return status
     }
 
-    // MARK: - Sudoers (one-time password setup)
+    // MARK: - Sudoers (один раз навсегда)
 
-    var isSudoersInstalled: Bool {
-        FileManager.default.fileExists(atPath: sudoersPath)
+    private var sudoersInstalled: Bool {
+        FileManager.default.fileExists(atPath: sudoersFile)
     }
 
-    /// Записывает sudoers через Python (надёжный escape) — требует пароль один раз.
-    func installSudoers(singboxPath: String) async -> Bool {
+    /// Устанавливает sudoers — один запрос пароля, потом навсегда без пароля.
+    /// Содержимое пишется через Swift напрямую в файл, без shell-экранирования.
+    private func installSudoers(singboxPath: String) async -> Bool {
         let user = NSUserName()
-        // Пишем содержимое sudoers через Python, чтобы избежать проблем с экранированием в shell
-        // !requiretty нужен чтобы sudo работал без TTY из GUI-приложения
-        let pythonScript = """
-import subprocess, sys
-content = "Defaults:\\(user) !requiretty\\n\\(user) ALL=(ALL) NOPASSWD: \\(singboxPath), /usr/bin/pkill\\n"
-with open('/etc/sudoers.d/croakvpn', 'w') as f:
-    f.write(content)
-subprocess.run(['chmod', '440', '/etc/sudoers.d/croakvpn'])
-"""
-        // Сохраняем Python-скрипт во временный файл
-        let pyPath = NSTemporaryDirectory() + "install_sudoers.py"
-        guard (try? pythonScript.write(toFile: pyPath, atomically: true, encoding: .utf8)) != nil else {
+        let sudoersContent = "Defaults:\(user) !requiretty\n\(user) ALL=(ALL) NOPASSWD: \(singboxPath), /usr/bin/pkill\n"
+
+        // Пишем содержимое sudoers в tmp-файл — без экранирования
+        let tmpSudoers = NSTemporaryDirectory() + "croakvpn_sudoers"
+        guard (try? sudoersContent.write(toFile: tmpSudoers, atomically: true, encoding: .utf8)) != nil else {
             return false
         }
 
-        // Запускаем через AppleScript с правами администратора — один единственный раз
-        let appleScript = "do shell script \"/usr/bin/python3 '\(pyPath)'\" with administrator privileges"
-        let status = await runAppleScript(appleScript)
+        // Shell-скрипт: копируем tmp -> /etc/sudoers.d/croakvpn и выставляем права
+        let installScript = """
+#!/bin/sh
+cp '\(tmpSudoers)' '\(sudoersFile)'
+chmod 440 '\(sudoersFile)'
+chown root:wheel '\(sudoersFile)'
+"""
+        let installPath = NSTemporaryDirectory() + "croakvpn_install_sudoers.sh"
+        guard (try? installScript.write(toFile: installPath, atomically: true, encoding: .utf8)) != nil else {
+            return false
+        }
+
+        // Один запрос пароля
+        let status = await runAsAdmin(installPath)
         return status == 0
     }
 
-    // MARK: - API check via curl
+    // MARK: - API check
 
     private func checkAPI() async -> Bool {
-        for _ in 0..<12 {
+        for _ in 0..<15 {
             let (out, _) = await shell("curl -s --connect-timeout 1 --max-time 1 http://\(clashAPIBase)/version")
             if out.contains("sing-box") { return true }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -120,8 +127,8 @@ subprocess.run(['chmod', '440', '/etc/sudoers.d/croakvpn'])
         let configFile = PrefsManager.shared.singboxConfigPath.path
         let logFile = NSHomeDirectory() + "/singbox_croak.log"
 
-        // Первый раз — устанавливаем sudoers (один запрос пароля)
-        if !isSudoersInstalled {
+        // Первый запуск — устанавливаем sudoers (один запрос пароля)
+        if !sudoersInstalled {
             let ok = await installSudoers(singboxPath: singboxPath)
             if !ok {
                 connectionState = .disconnected
@@ -129,9 +136,17 @@ subprocess.run(['chmod', '440', '/etc/sudoers.d/croakvpn'])
             }
         }
 
-        // Все последующие запуски — без пароля через sudo
-        await shell("sudo /usr/bin/pkill -x sing-box 2>/dev/null; sleep 0.3")
-        await shell("sudo '\(singboxPath)' run -c '\(configFile)' > '\(logFile)' 2>&1 &")
+        // Запуск sing-box через sudo — без пароля
+        let startScript = """
+#!/bin/sh
+/usr/bin/pkill -x sing-box 2>/dev/null
+sleep 0.3
+sudo '\(singboxPath)' run -c '\(configFile)' > '\(logFile)' 2>&1 &
+"""
+        let startPath = NSTemporaryDirectory() + "croakvpn_start.sh"
+        try? startScript.write(toFile: startPath, atomically: true, encoding: .utf8)
+        await shell("chmod +x '\(startPath)'")
+        await shell("sh '\(startPath)'")
 
         let isRunning = await checkAPI()
 
@@ -184,7 +199,7 @@ subprocess.run(['chmod', '440', '/etc/sudoers.d/croakvpn'])
         elapsedTimer?.invalidate(); elapsedTimer = nil
     }
 
-    // MARK: - Traffic stats via curl
+    // MARK: - Traffic stats
 
     private func pollTrafficStats() async {
         let (result, _) = await shell("curl -s --max-time 1 http://\(clashAPIBase)/connections")
