@@ -276,23 +276,41 @@ struct TrafficStatsView: View {
     }
 }
 
-// MARK: - Footer (кликабельный @croakvpnbot)
+// MARK: - Footer
 
 struct FooterView: View {
     var body: some View {
-        Button(action: {
+        // Используем NSViewController-подход через NSView для гарантированного клика
+        TelegramLink()
+            .frame(width: 100, height: 20)
+    }
+}
+
+// NSViewRepresentable гарантирует клик в любом случае — SwiftUI Button на тёмном фоне
+// иногда не регистрирует нажатие из-за hitTest. NSButton всегда работает корректно.
+struct TelegramLink: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSButton {
+        let btn = NSButton()
+        btn.title = "@croakvpnbot"
+        btn.isBordered = false
+        btn.bezelStyle = .inline
+        btn.font = NSFont.systemFont(ofSize: 11)
+        btn.contentTintColor = NSColor.gray.withAlphaComponent(0.5)
+        btn.cursor = .pointingHand
+        btn.target = context.coordinator
+        btn.action = #selector(Coordinator.open)
+        return btn
+    }
+
+    func updateNSView(_ nsView: NSButton, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    class Coordinator: NSObject {
+        @objc func open() {
             if let url = URL(string: "https://t.me/croakvpnbot") {
                 NSWorkspace.shared.open(url)
             }
-        }) {
-            Text("@croakvpnbot")
-                .font(.system(size: 11))
-                .foregroundColor(Color.gray.opacity(0.5))
-                .underline(false)
-        }
-        .buttonStyle(.plain)
-        .onHover { inside in
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
     }
 }
