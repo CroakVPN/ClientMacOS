@@ -1,1 +1,3 @@
-VPN клиент для macOS
+CroakVPN
+
+VPN клиент для MacOS
