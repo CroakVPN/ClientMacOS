@@ -20,13 +20,25 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Download sing-box binary
+      - name: Download sing-box binaries (arm64 + amd64)
         run: |
-          curl -L -o singbox.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v1.13.4/sing-box-1.13.4-darwin-arm64.tar.gz"
-          tar -xzf singbox.tar.gz
+          SINGBOX_VERSION="1.13.4"
+
+          # arm64
+          curl -L -o singbox-arm64.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-darwin-arm64.tar.gz"
+          tar -xzf singbox-arm64.tar.gz
+          mv "sing-box-${SINGBOX_VERSION}-darwin-arm64/sing-box" sing-box-arm64
+
+          # amd64
+          curl -L -o singbox-amd64.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION}-darwin-amd64.tar.gz"
+          tar -xzf singbox-amd64.tar.gz
+          mv "sing-box-${SINGBOX_VERSION}-darwin-amd64/sing-box" sing-box-amd64
+
+          # Universal binary
           mkdir -p CroakVPN/Resources
-          cp sing-box-1.13.4-darwin-arm64/sing-box CroakVPN/Resources/sing-box
+          lipo -create sing-box-arm64 sing-box-amd64 -output CroakVPN/Resources/sing-box
           chmod +x CroakVPN/Resources/sing-box
+          file CroakVPN/Resources/sing-box
           CroakVPN/Resources/sing-box version
 
       - name: Generate .xcodeproj
@@ -55,6 +67,7 @@ jobs:
             echo "AppIcon.icns injected"
           fi
           ls -lh "$APP/Contents/Resources/"
+          file "$APP/Contents/Resources/sing-box"
 
       - name: Package
         run: |

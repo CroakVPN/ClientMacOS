@@ -20,12 +20,36 @@ final class SingBoxManager: ObservableObject {
     // MARK: - Find sing-box binary
 
     private func findSingBox() -> String? {
-        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("sing-box").path,
-           FileManager.default.isExecutableFile(atPath: bundled) {
-            return bundled
+        var candidates: [String] = []
+
+        // 1. Bundle.main.resourceURL (стандартный путь для ресурсов)
+        if let resourceURL = Bundle.main.resourceURL {
+            candidates.append(resourceURL.appendingPathComponent("sing-box").path)
         }
-        let paths = ["/usr/local/bin/sing-box", "/opt/homebrew/bin/sing-box", "/usr/bin/sing-box"]
-        return paths.first { FileManager.default.isExecutableFile(atPath: $0) }
+
+        // 2. Рядом с исполняемым файлом приложения (Contents/MacOS/)
+        if let execURL = Bundle.main.executableURL?.deletingLastPathComponent() {
+            candidates.append(execURL.appendingPathComponent("sing-box").path)
+        }
+
+        // 3. Contents/Resources/ напрямую через bundleURL
+        let contentsResources = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Resources/sing-box").path
+        candidates.append(contentsResources)
+
+        // 4. Системные пути (если пользователь установил вручную)
+        candidates += ["/usr/local/bin/sing-box", "/opt/homebrew/bin/sing-box", "/usr/bin/sing-box"]
+
+        for path in candidates {
+            if FileManager.default.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+
+        // Логируем все проверенные пути для диагностики
+        let checked = candidates.joined(separator: "\n  ")
+        print("[CroakVPN] sing-box не найден. Проверены пути:\n  \(checked)")
+        return nil
     }
 
     // MARK: - Shell
@@ -135,9 +159,13 @@ chown root:wheel '\(sudoersFile)'
         connectionState = .connecting
 
         guard let singboxPath = findSingBox() else {
-            connectionState = .error("sing-box не найден")
+            connectionState = .error("sing-box не найден в приложении. Переустановите CroakVPN.")
             return
         }
+
+        // Убеждаемся что бинарник исполняемый и не заблокирован Gatekeeper
+        await shell("chmod +x '\(singboxPath)'")
+        await shell("xattr -dr com.apple.quarantine '\(singboxPath)' 2>/dev/null")
 
         guard PrefsManager.shared.getSingboxConfig() != nil else {
             connectionState = .error("Нет конфигурации. Добавьте подписку.")
