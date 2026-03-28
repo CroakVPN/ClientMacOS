@@ -289,20 +289,19 @@ struct FooterView: View {
 // NSViewRepresentable гарантирует клик в любом случае — SwiftUI Button на тёмном фоне
 // иногда не регистрирует нажатие из-за hitTest. NSButton всегда работает корректно.
 struct TelegramLink: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSButton {
-        let btn = NSButton()
+    func makeNSView(context: Context) -> CursorButton {
+        let btn = CursorButton()
         btn.title = "@croakvpnbot"
         btn.isBordered = false
         btn.bezelStyle = .inline
         btn.font = NSFont.systemFont(ofSize: 11)
         btn.contentTintColor = NSColor.gray.withAlphaComponent(0.5)
-        btn.cursor = .pointingHand
         btn.target = context.coordinator
         btn.action = #selector(Coordinator.open)
         return btn
     }
 
-    func updateNSView(_ nsView: NSButton, context: Context) {}
+    func updateNSView(_ nsView: CursorButton, context: Context) {}
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -312,5 +311,12 @@ struct TelegramLink: NSViewRepresentable {
                 NSWorkspace.shared.open(url)
             }
         }
+    }
+}
+
+// NSButton с курсором-указателем через resetCursorRects
+final class CursorButton: NSButton {
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
     }
 }
