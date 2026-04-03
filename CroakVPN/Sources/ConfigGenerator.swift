@@ -52,7 +52,6 @@ enum ConfigGenerator {
         }
 
         outbounds.append(["type": "direct", "tag": "direct"])
-        outbounds.append(["type": "dns", "tag": "dns-out"])
 
         var routeRules: [[String: Any]] = [
             ["action": "sniff"],
