@@ -32,9 +32,12 @@ struct ContentView: View {
 final class UpdateChecker: ObservableObject {
     @Published var updateAvailable: Bool = false
     @Published var latestVersion: String = ""
+    @Published var isDownloading: Bool = false
+    @Published var downloadProgress: Double = 0
 
     private let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
     private let releasesURL = "https://api.github.com/repos/CroakVPN/ClientMacOS/releases/latest"
+    private var downloadURL: String?
 
     func checkForUpdates() async {
         guard let url = URL(string: releasesURL) else { return }
@@ -46,9 +49,46 @@ final class UpdateChecker: ObservableObject {
                 if version != currentVersion {
                     latestVersion = version
                     updateAvailable = true
+                    // Ищем .zip ассет в релизе
+                    if let assets = json["assets"] as? [[String: Any]] {
+                        downloadURL = assets.first {
+                            ($0["name"] as? String)?.hasSuffix(".zip") == true
+                        }?["browser_download_url"] as? String
+                    }
                 }
             }
         } catch {}
+    }
+
+    func downloadUpdate() {
+        // Если нашли прямую ссылку на zip — скачиваем в Downloads
+        guard let urlString = downloadURL, let url = URL(string: urlString) else {
+            openReleasePage()
+            return
+        }
+
+        isDownloading = true
+        let task = URLSession.shared.downloadTask(with: url) { [weak self] tmpURL, response, error in
+            DispatchQueue.main.async {
+                self?.isDownloading = false
+                guard let tmpURL = tmpURL, error == nil else {
+                    self?.openReleasePage()
+                    return
+                }
+                let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
+                let dest = downloads.appendingPathComponent("CroakVPN-macOS.zip")
+                try? FileManager.default.removeItem(at: dest)
+                do {
+                    try FileManager.default.moveItem(at: tmpURL, to: dest)
+                    // Снимаем карантин с zip
+                    Process.launchedProcess(launchPath: "/usr/bin/xattr", arguments: ["-dr", "com.apple.quarantine", dest.path])
+                    NSWorkspace.shared.selectFile(dest.path, inFileViewerRootedAtPath: "")
+                } catch {
+                    self?.openReleasePage()
+                }
+            }
+        }
+        task.resume()
     }
 
     func openReleasePage() {
@@ -81,21 +121,32 @@ struct MainView: View {
             VStack(spacing: 0) {
                 // Update banner
                 if updater.updateAvailable {
-                    Button(action: { updater.openReleasePage() }) {
+                    Button(action: { updater.downloadUpdate() }) {
                         HStack {
-                            Text("Доступна версия \(updater.latestVersion)")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(.white)
-                            Spacer()
-                            Text("Скачать →")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.8))
+                            if updater.isDownloading {
+                                ProgressView()
+                                    .progressViewStyle(.circular)
+                                    .scaleEffect(0.7)
+                                    .tint(.white)
+                                Text("Загрузка...")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white)
+                            } else {
+                                Text("Доступна версия \(updater.latestVersion)")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white)
+                                Spacer()
+                                Text("Скачать →")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
                         }
                         .padding(.horizontal, 20)
                         .padding(.vertical, 10)
                         .background(Color(red: 0.20, green: 0.40, blue: 0.75))
                     }
                     .buttonStyle(.plain)
+                    .disabled(updater.isDownloading)
                 }
 
                 HeaderView(onSettings: { vm.showSettings = true })

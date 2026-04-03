@@ -13,11 +13,13 @@ enum ConfigGenerator {
 
             var outbound: [String: Any] = [
                 "type": config.protocol, "tag": tag,
-                "server": config.address, "server_port": config.port, "uuid": config.uuid,
-                "domain_resolver": "local"
+                "server": config.address, "server_port": config.port, "uuid": config.uuid
             ]
 
-            if let flow = config.flow, !flow.isEmpty { outbound["flow"] = flow }
+            if let flow = config.flow, !flow.isEmpty {
+                outbound["flow"] = flow
+                outbound["packet_encoding"] = "xudp"
+            }
 
             if config.security == "reality" || config.security == "tls" {
                 var tls: [String: Any] = ["enabled": true]
@@ -50,6 +52,7 @@ enum ConfigGenerator {
         }
 
         outbounds.append(["type": "direct", "tag": "direct"])
+        outbounds.append(["type": "dns", "tag": "dns-out"])
 
         var routeRules: [[String: Any]] = [
             ["action": "sniff"],
@@ -57,18 +60,14 @@ enum ConfigGenerator {
         ]
 
         if !serverAddresses.isEmpty {
-            // Разделяем IP-адреса и доменные имена
             var ipCidrs: [String] = []
             var domains: [String] = []
             for addr in serverAddresses {
                 if addr.contains(":") {
-                    // IPv6
                     ipCidrs.append(addr.contains("/") ? addr : "\(addr)/128")
                 } else if addr.allSatisfy({ $0.isNumber || $0 == "." || $0 == "/" }) {
-                    // IPv4
                     ipCidrs.append(addr.contains("/") ? addr : "\(addr)/32")
                 } else {
-                    // Домен
                     domains.append(addr)
                 }
             }
@@ -94,24 +93,26 @@ enum ConfigGenerator {
             ],
             "dns": [
                 "servers": [
-                    ["tag": "remote", "type": "tls", "server": "8.8.8.8", "detour": "proxy"],
-                    ["tag": "local", "type": "udp", "server": "1.1.1.1"]
+                    ["tag": "remote", "type": "https", "server": "https://dns.google/dns-query", "detour": "proxy"],
+                    ["tag": "local", "type": "https", "server": "https://1.1.1.1/dns-query", "detour": "direct"]
                 ],
-                "rules": [["ip_is_private": true, "server": "local"]],
+                "rules": [
+                    ["outbound": "any", "server": "local"],
+                    ["ip_is_private": true, "server": "local"]
+                ],
                 "final": "remote",
                 "strategy": "ipv4_only"
             ],
             "inbounds": [[
                 "type": "tun", "tag": "tun-in",
                 "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
-                "auto_route": true, "strict_route": false, "stack": "system"
+                "auto_route": true, "strict_route": true, "stack": "mixed"
             ]],
             "outbounds": outbounds,
             "route": [
                 "rules": routeRules,
                 "auto_detect_interface": true,
-                "final": "proxy",
-                "default_domain_resolver": "local"
+                "final": "proxy"
             ]
         ]
 

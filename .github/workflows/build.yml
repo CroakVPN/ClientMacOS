@@ -3,6 +3,7 @@ name: Build CroakVPN macOS
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   workflow_dispatch:
 
 jobs:
@@ -69,14 +70,26 @@ jobs:
           ls -lh "$APP/Contents/Resources/"
           file "$APP/Contents/Resources/sing-box"
 
-      - name: Package
+      - name: Create DMG installer
         run: |
-          cd build/Build/Products/Release
-          ditto -c -k --keepParent CroakVPN.app CroakVPN-macOS.zip
+          APP="build/Build/Products/Release/CroakVPN.app"
+          chmod +x scripts/create-dmg.sh
+          bash scripts/create-dmg.sh \
+            "$APP" \
+            "installer/FIX.command" \
+            "installer/background.png" \
+            "build/CroakVPN-macOS.dmg"
 
-      - name: Upload artifact
+      - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
           name: CroakVPN-macOS
-          path: build/Build/Products/Release/CroakVPN-macOS.zip
+          path: build/CroakVPN-macOS.dmg
           retention-days: 30
+
+      - name: Upload to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/CroakVPN-macOS.dmg
+          generate_release_notes: true
